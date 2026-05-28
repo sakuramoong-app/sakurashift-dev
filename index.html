@@ -739,8 +739,8 @@ function saveState(showOverlay=true){
       _isSaving=false;
       if(showOverlay) hideSyncOverlay();
       if(result&&result.error){
-        console.warn('GAS save error:',result.error);
-        showToast('⚠️ GAS保存エラー: '+result.error);
+        console.warn('GAS save error:',result.error); // 内部エラーはコンソールのみ
+        showToast('⚠️ 保存に失敗しました。時間をおいて再試行してください。');
         return false;
       }
       return true;
@@ -3211,7 +3211,8 @@ function confShiftIC(castName,wk){
       hideSyncOverlay();
       const statusLabel={confirmed:'確定済み',change_confirmed:'変更確定',inputting:'内勤入力中',change_inputting:'変更入力中',change_confirmed:'変更確定'}[sub.status]||STATUS_LABEL[sub.status]||sub.status;
       if(result&&result.error){
-        openInfoModal(`⚠️ GAS保存エラー：${result.error}<br>再度更新ボタンを押してください`, renderInputCheck);
+        console.warn('GAS update error:',result.error); // 内部エラーはコンソールのみ
+        openInfoModal('⚠️ 保存に失敗しました。時間をおいて再試行してください。', renderInputCheck);
       } else {
         openInfoModal(`✅ 更新・保存しました<br><span style="font-size:12px;color:var(--text2)">${castName}：${statusLabel}（${doneChecks}/${totalChecks}チェック）</span>`, renderInputCheck);
       }
