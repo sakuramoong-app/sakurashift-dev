@@ -610,7 +610,10 @@ async function loadFromGAS(){
     const localShifts=Object.keys(localData&&localData.shifts||{}).length;
     const localTime=localData&&localData._savedAt||0;
 
-    const res=await fetch(GAS_URL+'?action=load&token=sakura2025shift');
+    // ログイン済みの場合はrole/castNameを送信
+    const _role=currentUser?'cast':'staff';
+    const _castParam=currentUser?'&castName='+encodeURIComponent(currentUser.name):'';
+    const res=await fetch(GAS_URL+'?action=load&token=sakura2025shift&role='+_role+_castParam);
     const json=await res.json();
 
     if(json.data&&json.data!=='{}'){
