@@ -613,8 +613,7 @@ async function loadFromGAS(){
     // ログイン済みの場合はrole/castNameを送信
     const _role=currentUser?'cast':'staff';
     const _castParam=currentUser?'&castName='+encodeURIComponent(currentUser.name):'';
-    const res=await fetch(GAS_URL+'?action=load&token=sakura2025shift&role='+_role+_castParam);
-    const json=await res.json();
+    const res=await fetch(GAS_URL+'?action=load&token=sakura2025shift&role='+_role+_castParam);    const json=await res.json();
 
     if(json.data&&json.data!=='{}'){
       const gasData=JSON.parse(json.data);
@@ -627,9 +626,10 @@ async function loadFromGAS(){
       // GASデータを基本的に正とする
       // ただしGASのシフト件数がlocalの半分未満の場合のみlocalを保護
       const gasIsEmpty=gasShifts===0&&localShifts>0;
-      const gasMissingTooMuch=gasShifts<localShifts*0.5&&localShifts>5;
+      // キャストログイン時はGASが自分のシフトのみ返すため件数チェックをスキップ
+      const gasMissingTooMuch=_role!=='cast'&&gasShifts<localShifts*0.5&&localShifts>5;
 
-      if(localData&&(gasIsEmpty||gasMissingTooMuch)){
+      if(localData&&(gasIsEmpty||gasMissingTooMuch)&&_role!=='cast'){
         // GASデータが明らかに欠損→localを保護してGASに再保存
         S=migrateState(localData)||localData;
         S.operationLog=localData.operationLog||[];
