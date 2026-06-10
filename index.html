@@ -275,6 +275,20 @@ tr.ic-row-lower td{border-bottom:2px solid #b0bec5!important}
 
 @media(max-width:600px){.content{padding:8px}.form-row{grid-template-columns:1fr}.cal-cell{min-height:52px;padding:2px;overflow:hidden}.cal-shift-tag{font-size:8px}.cal-memo{font-size:7px}.stat-grid{grid-template-columns:repeat(2,1fr)}}
 
+/* ===== 通知バッジ ===== */
+.ntf-badge{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;background:#f87171;color:#fff;border-radius:10px;font-size:10px;font-weight:800;padding:0 4px;margin-left:4px;vertical-align:middle;line-height:1}
+.ntf-badge.hidden{display:none}
+.ntf-item{display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-radius:9px;background:#fff;border:1.5px solid var(--border);margin-bottom:6px;transition:border-color .2s}
+.ntf-item.unread{background:#fff5f7;border-color:var(--pink4)}
+.ntf-item-icon{font-size:18px;flex-shrink:0;margin-top:1px}
+.ntf-item-body{flex:1;min-width:0}
+.ntf-item-msg{font-size:13px;color:var(--text);font-weight:600;line-height:1.6}
+.ntf-item-time{font-size:10px;color:var(--text3);margin-top:2px}
+.ntf-item-read{font-size:10px;color:var(--text3);flex-shrink:0}
+/* キャスト向けポップアップ */
+.ntf-popup-overlay{position:fixed;inset:0;background:rgba(15,23,42,.7);backdrop-filter:blur(4px);z-index:2000;display:flex;align-items:center;justify-content:center;padding:16px}
+.ntf-popup-box{background:#fff;border-radius:16px;padding:22px 20px;width:100%;max-width:400px;max-height:80vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.28)}
+
 /* ===== 印刷スタイル ===== */
 @media print {
   body * { visibility: hidden; }
@@ -320,6 +334,7 @@ tr.ic-row-lower td{border-bottom:2px solid #b0bec5!important}
   <div id="castTabs" class="page-tabs hidden">
     <button class="page-tab active" onclick="showCastPage('calendar')">📅 シフト入力</button>
     <button class="page-tab" onclick="showCastPage('history')">📋 提出履歴</button>
+    <button class="page-tab" onclick="showCastPage('notifications')" id="castNtfTab">🔔 通知<span class="ntf-badge hidden" id="castNtfBadge">0</span></button>
   </div>
   <div id="staffTabs" class="page-tabs hidden">
     <button class="page-tab active" onclick="showStaffPage('statuslist')">📊 ステータス一覧</button>
@@ -327,6 +342,7 @@ tr.ic-row-lower td{border-bottom:2px solid #b0bec5!important}
     <button class="page-tab" onclick="showStaffPage('hourly')">⏰ 時間帯人数</button>
     <button class="page-tab" onclick="showStaffPage('settings')">⚙️ マスタ設定</button>
     <button class="page-tab" onclick="showStaffPage('notice')">📢 お知らせ</button>
+    <button class="page-tab" onclick="showStaffPage('notifications')" id="staffNtfTab">🔔 通知<span class="ntf-badge hidden" id="staffNtfBadge">0</span></button>
     <button class="page-tab" onclick="showStaffPage('logs')">📋 ログ</button>
     <button class="page-tab" onclick="showStaffPage('staffcal')">🗓️ 内勤シフト</button>
     <button class="page-tab" onclick="showStaffPage('castinfo')">📲 配布用</button>
@@ -530,7 +546,7 @@ const AVC=['av-0','av-1','av-2','av-3','av-4'];
 function avc(n){const i=(S.castList||[]).findIndex(u=>u.name===n);return AVC[i>=0?i%5:0];}
 
 // ===== STATE =====
-const GAS_URL='https://script.google.com/macros/s/AKfycbx7q1hkdOttO-5HaPuunwfos9yPimlkYtYYSjLORSLcKoOXUbe711-EAkN0RNbYdAXZ/exec';
+const GAS_URL='https://script.google.com/macros/s/AKfycbxmuMwp5Ux-2Cytp6pR7qx6FZLbwtT1tTfXEGn_8l2QBi19j88cG7Le5nao__a_Lyek/exec';
 let S=initState(); // 初期値（GASロード前）
 let gasLoaded=false;
 
@@ -871,6 +887,255 @@ function saveLocalOnly(){
     localStorage.setItem('shiftSysV8_backup',_j);
   }catch(e){console.warn('localStorage error:',e);}
 }
+
+// =====================================================================
+// ===== 通知機能 (Notification System) =====
+// =====================================================================
+
+// 通知の型定義（コメント）
+// { id: string, type: string, message: string, createdAt: string, read: boolean }
+// type: 'submit'|'change_submit'|'confirm'|'change_confirm'|'unlock'|'notice'
+
+// ローカル通知ストア（localStorage）
+const NTF_KEY_STAFF = 'ntf_staff_local';
+function getCastNtfKey(castName){ return 'ntf_cast_'+castName+'_local'; }
+
+function getLocalNtf(key){
+  try{ return JSON.parse(localStorage.getItem(key)||'[]'); }catch(e){ return []; }
+}
+function saveLocalNtf(key, arr){
+  try{ localStorage.setItem(key, JSON.stringify(arr)); }catch(e){}
+}
+
+// 通知を追加（localStorageのみ）
+function addNotification(key, type, message){
+  const arr = getLocalNtf(key);
+  const ntf = { id: Date.now()+'_'+Math.random().toString(36).slice(2,7), type, message, createdAt: new Date().toLocaleString('ja-JP'), read: false };
+  arr.unshift(ntf);
+  if(arr.length > 50) arr.length = 50; // 最大50件
+  saveLocalNtf(key, arr);
+  return ntf;
+}
+
+// GASから通知を取得してローカルにマージ
+async function fetchAndMergeNotifications(role, castName){
+  if(!GAS_URL) return;
+  try{
+    let url = GAS_URL+'?action=getNotifications&token=sakura2025shift&role='+role;
+    if(castName) url += '&castName='+encodeURIComponent(castName);
+    const res = await fetch(url);
+    const json = await res.json();
+    if(json && json.notifications){
+      const key = role==='staff' ? NTF_KEY_STAFF : getCastNtfKey(castName||'');
+      const local = getLocalNtf(key);
+      const localIds = new Set(local.map(n=>n.id));
+      // GASにあってローカルにないものを追加（既読状態はローカル優先）
+      const merged = [...local];
+      (json.notifications||[]).forEach(gn=>{
+        if(!localIds.has(gn.id)){
+          merged.push(gn);
+        } else {
+          // ローカルにある場合はread状態をローカルから維持
+          const li = merged.find(n=>n.id===gn.id);
+          if(li && gn.read) li.read = true; // GASで既読になってたらローカルも既読に
+        }
+      });
+      // 日時降順ソート・最大50件
+      merged.sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+      merged.length = Math.min(merged.length, 50);
+      saveLocalNtf(key, merged);
+    }
+  }catch(e){ console.warn('fetchNotifications error:', e); }
+}
+
+// GASに既読を送信
+async function markNotificationsRead(role, castName, ids){
+  if(!GAS_URL || !ids || ids.length===0) return;
+  try{
+    const body = new FormData();
+    body.append('action','markRead');
+    body.append('token','sakura2025shift');
+    body.append('role', role);
+    if(castName) body.append('castName', castName);
+    body.append('ids', JSON.stringify(ids));
+    await fetch(GAS_URL, {method:'POST', body});
+  }catch(e){ console.warn('markRead error:', e); }
+}
+
+// バッジ数を更新
+function updateNtfBadge(){
+  if(currentType==='staff'){
+    const arr = getLocalNtf(NTF_KEY_STAFF);
+    const unread = arr.filter(n=>!n.read).length;
+    const badge = document.getElementById('staffNtfBadge');
+    if(badge){
+      badge.textContent = unread;
+      badge.classList.toggle('hidden', unread===0);
+    }
+    // タブタイトル更新
+    if(unread>0) document.title = '('+unread+') SHIFT SYSTEM';
+    else document.title = 'SHIFT SYSTEM';
+  } else if(currentType==='cast' && currentUser){
+    const arr = getLocalNtf(getCastNtfKey(currentUser.name));
+    const unread = arr.filter(n=>!n.read).length;
+    const badge = document.getElementById('castNtfBadge');
+    if(badge){
+      badge.textContent = unread;
+      badge.classList.toggle('hidden', unread===0);
+    }
+    if(unread>0) document.title = '('+unread+') SHIFT SYSTEM';
+    else document.title = 'SHIFT SYSTEM';
+  }
+}
+
+// キャストログイン後の未読ポップアップ
+function showCastNtfPopup(castName){
+  const arr = getLocalNtf(getCastNtfKey(castName));
+  const unread = arr.filter(n=>!n.read);
+  if(!unread.length) return;
+  const items = unread.slice(0,5).map(n=>`
+    <div class="ntf-item unread" style="margin-bottom:8px">
+      <div class="ntf-item-icon">${ntfTypeIcon(n.type)}</div>
+      <div class="ntf-item-body">
+        <div class="ntf-item-msg">${escHtml(n.message)}</div>
+        <div class="ntf-item-time">${n.createdAt}</div>
+      </div>
+    </div>`).join('');
+  const more = unread.length>5 ? `<div style="text-align:center;font-size:12px;color:var(--text2);padding:4px">他 ${unread.length-5} 件…</div>`:'';
+  const overlay = document.createElement('div');
+  overlay.className = 'ntf-popup-overlay';
+  overlay.id = 'ntfPopupOverlay';
+  overlay.innerHTML = `<div class="ntf-popup-box">
+    <div style="font-size:16px;font-weight:800;color:var(--text);margin-bottom:14px">🔔 ${unread.length}件の未読通知</div>
+    ${items}${more}
+    <div style="text-align:center;margin-top:12px">
+      <button onclick="closeCastNtfPopup(true)" class="btn btn-primary" style="width:100%;padding:10px;font-size:14px">✅ 確認した（既読にする）</button>
+    </div>
+  </div>`;
+  document.body.appendChild(overlay);
+}
+
+function closeCastNtfPopup(markRead){
+  const overlay = document.getElementById('ntfPopupOverlay');
+  if(overlay) overlay.remove();
+  if(markRead && currentUser){
+    const key = getCastNtfKey(currentUser.name);
+    const arr = getLocalNtf(key);
+    const unreadIds = arr.filter(n=>!n.read).map(n=>n.id);
+    arr.forEach(n=>{ n.read=true; });
+    saveLocalNtf(key, arr);
+    markNotificationsRead('cast', currentUser.name, unreadIds);
+    updateNtfBadge();
+  }
+}
+
+function ntfTypeIcon(type){
+  const map={submit:'📤',change_submit:'🔄',confirm:'✅',change_confirm:'✅',unlock:'🔓',notice:'📢',change_request:'📝'};
+  return map[type]||'🔔';
+}
+
+// ===== キャスト通知ページ描画 =====
+function renderCastNotifications(){
+  const castName = currentUser && currentUser.name;
+  if(!castName){ document.getElementById('mainContent').innerHTML=''; return; }
+  const arr = getLocalNtf(getCastNtfKey(castName));
+  // 全件既読にする
+  const unreadIds = arr.filter(n=>!n.read).map(n=>n.id);
+  if(unreadIds.length){
+    arr.forEach(n=>{ n.read=true; });
+    saveLocalNtf(getCastNtfKey(castName), arr);
+    markNotificationsRead('cast', castName, unreadIds);
+    updateNtfBadge();
+  }
+  let html = `<div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div class="card-title" style="margin:0"><span class="ct-icon ct-pink">🔔</span>通知</div>
+      <button class="btn btn-outline btn-sm" onclick="syncAndReload()">🔄 最新取得</button>
+    </div>`;
+  if(!arr.length){
+    html += `<p style="color:var(--text2);font-size:13px;padding:8px 0">通知はありません</p>`;
+  } else {
+    arr.forEach(n=>{
+      html += `<div class="ntf-item${n.read?'':' unread'}">
+        <div class="ntf-item-icon">${ntfTypeIcon(n.type)}</div>
+        <div class="ntf-item-body">
+          <div class="ntf-item-msg">${escHtml(n.message)}</div>
+          <div class="ntf-item-time">${n.createdAt}</div>
+        </div>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+  document.getElementById('mainContent').innerHTML = html;
+}
+
+// ===== 内勤通知ページ描画 =====
+function renderStaffNotifications(){
+  const arr = getLocalNtf(NTF_KEY_STAFF);
+  // 全件既読にする
+  const unreadIds = arr.filter(n=>!n.read).map(n=>n.id);
+  if(unreadIds.length){
+    arr.forEach(n=>{ n.read=true; });
+    saveLocalNtf(NTF_KEY_STAFF, arr);
+    markNotificationsRead('staff', '', unreadIds);
+    updateNtfBadge();
+  }
+  let html = `<div class="card">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+      <div class="card-title" style="margin:0"><span class="ct-icon ct-blue">🔔</span>通知（内勤）</div>
+      <button class="btn btn-outline btn-sm" onclick="syncAndReload()">🔄 最新取得</button>
+    </div>`;
+  if(!arr.length){
+    html += `<p style="color:var(--text2);font-size:13px;padding:8px 0">通知はありません</p>`;
+  } else {
+    arr.forEach(n=>{
+      html += `<div class="ntf-item${n.read?'':' unread'}">
+        <div class="ntf-item-icon">${ntfTypeIcon(n.type)}</div>
+        <div class="ntf-item-body">
+          <div class="ntf-item-msg">${escHtml(n.message)}</div>
+          <div class="ntf-item-time">${n.createdAt}</div>
+        </div>
+      </div>`;
+    });
+  }
+  html += `</div>`;
+  document.getElementById('mainContent').innerHTML = html;
+}
+
+// ===== 通知を作成してGASに保存するヘルパー =====
+// 内勤への通知を追加
+async function notifyStaff(type, message){
+  addNotification(NTF_KEY_STAFF, type, message);
+  if(!GAS_URL) return;
+  try{
+    const body = new FormData();
+    body.append('action','addNotification');
+    body.append('token','sakura2025shift');
+    body.append('role','staff');
+    body.append('type', type);
+    body.append('message', message);
+    const res = await fetch(GAS_URL, {method:'POST', body});
+    // メール送信はGAS側で処理
+  }catch(e){ console.warn('notifyStaff error:', e); }
+}
+
+// キャストへの通知を追加
+async function notifyCast(castName, type, message){
+  addNotification(getCastNtfKey(castName), type, message);
+  if(!GAS_URL) return;
+  try{
+    const body = new FormData();
+    body.append('action','addNotification');
+    body.append('token','sakura2025shift');
+    body.append('role','cast');
+    body.append('castName', castName);
+    body.append('type', type);
+    body.append('message', message);
+    await fetch(GAS_URL, {method:'POST', body});
+  }catch(e){ console.warn('notifyCast error:', e); }
+}
+
+// =====================================================================
 
 // Migration: ensure new fields
 if(!S.castList){
@@ -1291,6 +1556,11 @@ async function doLogin(){
   loadFromGAS().then(ok=>{
       if(ok) showCastPage(_currentCastPage);
       else showToast('⚠️ 同期に失敗しました。ローカルデータを表示中です。');
+      // 通知取得＆バッジ更新＆ポップアップ
+      fetchAndMergeNotifications('cast', u.name).then(()=>{
+        updateNtfBadge();
+        showCastNtfPopup(u.name);
+      });
     });
   } else {
     // 内勤PWロックチェック
@@ -1329,6 +1599,8 @@ async function doLogin(){
     // まずローカルデータで即表示
     // ログイン前にGAS読み込み済みなのでそのまま表示
     showStaffPage('statuslist');
+    // 通知取得＆バッジ更新
+    fetchAndMergeNotifications('staff', '').then(()=>updateNtfBadge());
   }
 }
 document.getElementById('loginPw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
@@ -1350,6 +1622,12 @@ function syncAndReload(){
     if(currentType==='cast') showCastPage(_currentCastPage);
     else if(currentType==='staff') showStaffPage(_currentStaffPage);
     if(!ok) showToast('⚠️ サーバー同期に失敗。ローカルデータを表示しています');
+    // 通知もマージ・バッジ更新
+    if(currentType==='cast'&&currentUser){
+      fetchAndMergeNotifications('cast',currentUser.name).then(()=>updateNtfBadge());
+    } else if(currentType==='staff'){
+      fetchAndMergeNotifications('staff','').then(()=>updateNtfBadge());
+    }
   });
 }
 function reloadCurrentPage(){
@@ -1531,8 +1809,10 @@ function escHtml(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').rep
 // ===== CAST PAGES =====
 function showCastPage(p){
   _currentCastPage=p;
-  document.querySelectorAll('#castTabs .page-tab').forEach((el,i)=>el.classList.toggle('active',(i===0&&p==='calendar')||(i===1&&p==='history')));
-  if(p==='calendar')renderCal();else renderHistory();
+  document.querySelectorAll('#castTabs .page-tab').forEach((el,i)=>el.classList.toggle('active',(i===0&&p==='calendar')||(i===1&&p==='history')||(i===2&&p==='notifications')));
+  if(p==='calendar')renderCal();
+  else if(p==='history')renderHistory();
+  else if(p==='notifications')renderCastNotifications();
 }
 
 function renderCastTopBanner(){
@@ -2146,6 +2426,8 @@ function icConfirmHoliday(castName, wk, ds){
         sub.status='change_inputting';
       }
       addLog('change_confirm',castName,wk,`休日変更確定：${ds}`);
+      const _ds=ds; // closureのため
+      notifyCast(castName, 'change_confirm', `${getWeekLabel(wk)} の休日変更（${(()=>{const _d=new Date(_ds);return (_d.getMonth()+1)+'/'+_d.getDate();})()}）が確定しました ✅`);
       try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
       gasConfirmSave(castName, wk, sub).then(ok=>{
         if(!ok) console.warn('confirmSave failed in icConfirmHoliday');
@@ -2296,6 +2578,7 @@ function doSubmitShifts(){
       S.submissions[k].status='waiting';
     }
     addLog('submit',name,wk,'シフト提出');
+    notifyStaff('submit', `${name} さんが ${getWeekLabel(wk)} のシフトを提出しました`);
   });
   changeWks.forEach(wk=>{
     const k=name+'_'+wk;
@@ -2303,6 +2586,7 @@ function doSubmitShifts(){
       S.submissions[k].status='change_submitted';
       S.submissions[k].changeSubmittedAt=now;
       addLog('change_submit',name,wk,'変更シフト再提出');
+      notifyStaff('change_submit', `${name} さんが ${getWeekLabel(wk)} の変更シフトを再提出しました`);
     }
   });
 
@@ -2455,10 +2739,10 @@ function showStaffPage(p){
   const _fh=document.getElementById('icFixedHeader');
   if(_fh&&p!=='inputcheck')_fh.style.display='none';
   if(p==='inputcheck'&&!_icJumping){icGroupMode=true;icSearchQuery='';}
-  const pages=['statuslist','inputcheck','hourly','settings','notice','logs','staffcal','castinfo','howto'];
+  const pages=['statuslist','inputcheck','hourly','settings','notice','notifications','logs','staffcal','castinfo','howto'];
   document.querySelectorAll('#staffTabs .page-tab').forEach((el,i)=>el.classList.toggle('active',pages[i]===p));
   try{
-    ({dashboard:renderDashboard,statuslist:renderStatusList,inputcheck:renderInputCheck,hourly:renderHourly,settings:renderSettings,notice:renderNoticeAdmin,logs:renderLogs,staffcal:renderStaffCal,castinfo:renderCastInfo,howto:renderHowTo})[p]?.();
+    ({dashboard:renderDashboard,statuslist:renderStatusList,inputcheck:renderInputCheck,hourly:renderHourly,settings:renderSettings,notice:renderNoticeAdmin,notifications:renderStaffNotifications,logs:renderLogs,staffcal:renderStaffCal,castinfo:renderCastInfo,howto:renderHowTo})[p]?.();
   }catch(e){
     const mc=document.getElementById('mainContent');
     if(mc)mc.innerHTML=`<div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:16px;margin:12px;color:#991b1b;font-family:monospace;font-size:12px">
@@ -3588,6 +3872,12 @@ function confShiftIC(castName,wk){
   sub.confirmedBy=currentStaffName||'内勤';
   sub.confirmedAt=new Date().toLocaleString('ja-JP');
   addLog('confirm',castName,wk,`更新→${STATUS_LABEL[sub.status]||sub.status}（${doneChecks}/${totalChecks}）`);
+  // 確定になったらキャストへ通知
+  if(sub.status==='confirmed'){
+    notifyCast(castName, 'confirm', `${getWeekLabel(wk)} のシフトが確定しました ✅`);
+  } else if(sub.status==='change_confirmed'){
+    notifyCast(castName, 'change_confirm', `${getWeekLabel(wk)} の変更シフトが確定しました ✅`);
+  }
   // 更新ボタンを押した日時をシフトのある日に記録
   if(!sub.checkedDates)sub.checkedDates={};
   const _now=new Date();
@@ -3698,6 +3988,7 @@ function icDoRequestChange(castName,wk,ds){
   sub.changedDates=ds?[...new Set([...existingDates,ds])]:existingDates;
   sub.status='change_unlocked';
   addLog('change_unlock',castName,wk,ds||'週全体');
+  notifyCast(castName, 'unlock', `${getWeekLabel(wk)} のシフト変更が許可されました 🔓 再提出をお願いします`);
   try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
   gasConfirmSave(castName, wk, sub).then(ok=>{
     if(!ok) console.warn('confirmSave failed in icDoRequestChange');
@@ -4059,6 +4350,9 @@ function renderSettings(){
         return gasLocked?`<span style="margin-left:12px"><button style="padding:4px 12px;font-size:11px;font-weight:700;background:#dc2626;color:#fff;border:none;border-radius:6px;cursor:pointer;box-shadow:0 2px 6px rgba(220,38,38,.4)" onclick="unlockCastByStaff('${u.name}')">🔓 ロック解除</button></span>`:'';
       })()}
       <button onclick="openAbsenceModal('${u.name}')" style="padding:3px 8px;font-size:11px;background:#eff6ff;color:#1d4ed8;border:1px solid #93c5fd;border-radius:5px;cursor:pointer">${(()=>{const abs=getCastAbsences(u.name);return abs.length?`📅 休暇(${abs.length})`:'📅 休暇';})()}</button>
+      <input type="email" id="castEmail_${u.name}" placeholder="メール（任意）" value="${escHtml(u.email||'')}"
+        style="width:160px;font-size:11px;padding:3px 6px;border:1.5px solid #d1d5db;border-radius:5px;color:var(--text)"
+        title="通知メール（確定時などに送信）">
       <button class="btn btn-danger btn-sm" onclick="removeCast('${u.name}')">削除</button>
     </div>`;
   });
@@ -4126,6 +4420,11 @@ function renderSettings(){
     <input type="text" id="newStaffName" class="form-input" placeholder="スタッフ名" style="flex:1">
     <input type="color" id="newStaffColor" value="#f472b6" style="width:36px;height:32px;border:none;border-radius:6px;cursor:pointer">
     <button class="btn btn-primary btn-sm" onclick="addStaff()">追加</button>
+  </div>
+  <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+    <label class="form-label">📧 内勤通知メールアドレス</label>
+    <div style="font-size:11px;color:var(--text2);margin-bottom:6px">キャストが提出・変更申請をしたときにメールで通知します（任意）</div>
+    <input type="email" id="staffNotifyEmail" class="form-input" value="${escHtml(S.notifyEmail||'')}" placeholder="例：staff@example.com" style="width:100%;max-width:320px">
   </div></div>`;
 
   // 営業時間設定
@@ -4395,6 +4694,14 @@ function saveAllSettings(){
   // 内勤PW
   const pwEl=document.getElementById('staffPwInput');
   if(pwEl&&pwEl.value.trim()) S.staffPw=String(pwEl.value.trim());
+  // 内勤通知メール
+  const emailEl=document.getElementById('staffNotifyEmail');
+  if(emailEl) S.notifyEmail=emailEl.value.trim();
+  // 各キャストのメールアドレス
+  (S.castList||[]).forEach(u=>{
+    const el=document.getElementById('castEmail_'+u.name);
+    if(el) u.email=el.value.trim();
+  });
   addLog('settings','','','マスタ設定保存');
   saveState(false);
   openInfoModal('✅ マスタ設定を保存しました');
@@ -4562,6 +4869,8 @@ function saveNotice(){
     window._pendingNoticeImage=null;
   }
   addLog('notice','','','全体お知らせ更新');
+  // 全キャストに通知
+  (S.castList||[]).forEach(u=>{ notifyCast(u.name,'notice','📢 全体お知らせが更新されました'); });
   saveState(false);openInfoModal('全体お知らせを保存しました！',renderNoticeAdmin);
 }
 function clearNotice(){
@@ -4582,6 +4891,8 @@ function savePersonalNoticeBulk(){
   });
   window._pendingPersonalImage=null;
   addLog('notice','','',`個別お知らせ送信：${targets.join('・')}`);
+  // 対象キャストに通知
+  targets.forEach(n=>{ notifyCast(n,'notice','💌 あなた宛のお知らせが届きました'); });
   saveState(false);
   openInfoModal(`✅ ${targets.join('・')} へのお知らせを送信しました！`,renderNoticeAdmin);
 }
