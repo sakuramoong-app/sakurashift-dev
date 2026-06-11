@@ -666,10 +666,14 @@ async function loadFromGAS(){
           const _castName=currentUser&&currentUser.name;
           if(_castName&&localData.submissions){
             Object.entries(localData.submissions).forEach(([k,v])=>{
-              if(!k.startsWith(_castName+'_'))return; // 自分以外は無視
+              if(!k.startsWith(_castName+'_'))return;
               if(!S.submissions[k]){
-                // GASにないがlocalにある→localを優先（提出済みデータ保護）
-                S.submissions[k]=v;
+                // GASにないsubmissionは基本削除（内勤リセット済みとみなす）
+                // ただし「GAS保存成功済み」フラグがないものは通信失敗の可能性→保護
+                if(!_castGasSaved.has(k)){
+                  S.submissions[k]=v; // GAS未確認→localを保護
+                }
+                // _castGasSaved にある = GAS保存済みなのにGASにない = 内勤がリセットした → 復活させない
               }
             });
           }
@@ -1323,6 +1327,7 @@ const _restCollapsed={};
 let _isSaving=false;
 let _saveQueue=Promise.resolve(true);
 let _resetCastNames=new Set(); // リセット直後のキャストはGASマージで復活させない
+let _castGasSaved=new Set(); // GAS保存成功済みのsubmissionキー（これのみlocalを信頼）
 
 // 重要操作前に保存完了を待つ（軽い保存が進行中ならくるくる表示して待機）
 function waitForSave(msg){
@@ -2625,8 +2630,12 @@ function doSubmitShifts(){
     body.append('shifts',JSON.stringify(submitData.shifts));
     body.append('submissions',JSON.stringify(submitData.submissions));
     fetch(GAS_URL,{method:'POST',body}).then(r=>r.json()).then(result=>{
-      if(result&&result.error) console.warn('castSave error:',result.error);
-      else console.log('castSave OK');
+      if(result&&result.error){ console.warn('castSave error:',result.error); }
+      else{
+        console.log('castSave OK');
+        // GAS保存成功したsubmissionキーを記録
+        Object.keys(submitData.submissions||{}).forEach(k=>_castGasSaved.add(k));
+      }
     }).catch(e=>console.warn('castSave failed:',e));
   }
   closeModal();
