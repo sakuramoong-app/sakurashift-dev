@@ -1111,35 +1111,17 @@ function renderStaffNotifications(){
 
 // ===== 通知を作成してGASに保存するヘルパー =====
 // 内勤への通知を追加
-async function notifyStaff(type, message){
+function notifyStaff(type, message){
+  // ローカルのみ保存（GAS側のcastSaveで通知ストアへ保存される）
   addNotification(NTF_KEY_STAFF, type, message);
-  if(!GAS_URL) return;
-  try{
-    const body = new FormData();
-    body.append('action','addNotification');
-    body.append('token','sakura2025shift');
-    body.append('role','staff');
-    body.append('type', type);
-    body.append('message', message);
-    const res = await fetch(GAS_URL, {method:'POST', body});
-    // メール送信はGAS側で処理
-  }catch(e){ console.warn('notifyStaff error:', e); }
+  updateNtfBadge();
 }
 
 // キャストへの通知を追加
-async function notifyCast(castName, type, message){
+function notifyCast(castName, type, message){
+  // ローカルのみ保存（GAS側のconfirmSaveで通知ストアへ保存される）
   addNotification(getCastNtfKey(castName), type, message);
-  if(!GAS_URL) return;
-  try{
-    const body = new FormData();
-    body.append('action','addNotification');
-    body.append('token','sakura2025shift');
-    body.append('role','cast');
-    body.append('castName', castName);
-    body.append('type', type);
-    body.append('message', message);
-    await fetch(GAS_URL, {method:'POST', body});
-  }catch(e){ console.warn('notifyCast error:', e); }
+  updateNtfBadge();
 }
 
 // =====================================================================
@@ -1569,6 +1551,7 @@ async function doLogin(){
       fetchAndMergeNotifications('cast', u.name).then(()=>{
         updateNtfBadge();
         showCastNtfPopup(u.name);
+        startNtfPolling(); // バックグラウンド自動取得開始
       });
     });
   } else {
@@ -1609,7 +1592,10 @@ async function doLogin(){
     // ログイン前にGAS読み込み済みなのでそのまま表示
     showStaffPage('statuslist');
     // 通知取得＆バッジ更新
-    fetchAndMergeNotifications('staff', '').then(()=>updateNtfBadge());
+    fetchAndMergeNotifications('staff', '').then(()=>{
+      updateNtfBadge();
+      startNtfPolling(); // バックグラウンド自動取得開始
+    });
   }
 }
 document.getElementById('loginPw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
@@ -1653,6 +1639,24 @@ function reloadCurrentPage(){
 
 // ===== 無操作自動ログアウト（30分） =====
 const AUTO_LOGOUT_MS = 30 * 60 * 1000; // 30分
+const NTF_POLL_MS = 2 * 60 * 1000; // 通知ポーリング間隔：2分
+let _ntfPollTimer = null;
+
+function startNtfPolling(){
+  stopNtfPolling();
+  _ntfPollTimer = setInterval(async ()=>{
+    if(!currentUser && currentType !== 'staff') return;
+    if(currentType==='cast' && currentUser){
+      await fetchAndMergeNotifications('cast', currentUser.name);
+    } else if(currentType==='staff'){
+      await fetchAndMergeNotifications('staff', '');
+    }
+    updateNtfBadge();
+  }, NTF_POLL_MS);
+}
+function stopNtfPolling(){
+  if(_ntfPollTimer){ clearInterval(_ntfPollTimer); _ntfPollTimer=null; }
+}
 const AUTO_LOGOUT_WARN_MS = 10; // 10秒前に警告
 let _autoLogoutTimer = null;
 let _autoLogoutWarnTimer = null;
@@ -1713,6 +1717,7 @@ function doLogout(){
   clearTimeout(_autoLogoutTimer);
   clearTimeout(_autoLogoutWarnTimer);
   clearInterval(_autoLogoutCountdown);
+  stopNtfPolling(); // 通知ポーリング停止
   const _w=document.getElementById('autoLogoutWarn');if(_w)_w.remove();
   currentUser=null;currentType=null;currentStaffName='';
   document.getElementById('loginScreen').style.display='flex';
