@@ -770,9 +770,12 @@ function saveState(showOverlay=true){
           const gasData2=JSON.parse(gasResp.data);
           const gasSubs=gasData2.submissions||{};
           // GASにあってlocalにないsubmissionsを補完
+          // ただしリセット直後のキャストは復活させない
           Object.entries(gasSubs).forEach(([k,v])=>{
-            if(!S.submissions[k]) S.submissions[k]=v;
+            const _castOfSub=(k.match(/^(.+?)_\d{4}-\d{2}-\d{2}$/)||[])[1]||'';
+            if(!S.submissions[k] && !_resetCastNames.has(_castOfSub)) S.submissions[k]=v;
           });
+          _resetCastNames.clear(); // マージ完了後にクリア
           // localStorageも更新
           S._savedAt=Date.now();
           try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
@@ -1319,6 +1322,7 @@ function setNoticeImage(key,data){
 const _restCollapsed={};
 let _isSaving=false;
 let _saveQueue=Promise.resolve(true);
+let _resetCastNames=new Set(); // リセット直後のキャストはGASマージで復活させない
 
 // 重要操作前に保存完了を待つ（軽い保存が進行中ならくるくる表示して待機）
 function waitForSave(msg){
@@ -4927,10 +4931,10 @@ function resetCastShift(){
   openConfirmModal(`「${name}」のシフト入力をクリアしますか？
 （提出履歴もクリアしてカレンダーのロックを解除します）`,()=>{
     Object.keys(S.shifts).forEach(k=>{if(k.startsWith(name+'_'))delete S.shifts[k];});
-    // submissionsも削除しないとカレンダーが🔒のままになる
     Object.keys(S.submissions).forEach(k=>{if(k.startsWith(name+'_'))delete S.submissions[k];});
     Object.keys(S.checkData).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkData[k];});
     Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
+    _resetCastNames.add(name); // saveState内のGASマージで復活させない
     saveState(false);openInfoModal(`✅ ${name}のシフトと提出履歴をクリアしました`,renderSettings);
   });
 }
@@ -4940,10 +4944,10 @@ function resetCastSubmission(){
     Object.keys(S.submissions).forEach(k=>{if(k.startsWith(name+'_'))delete S.submissions[k];});
     Object.keys(S.checkData).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkData[k];});
     Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
-    // ロック解除
     if(S.castLocks&&S.castLocks[name]) delete S.castLocks[name];
     clearLock('cast_'+name);
-    saveState(false);openInfoModal(`✅ ${name}の提出履歴・チェックをクリアしました（ロックも解除）`,renderSettings);
+    _resetCastNames.add(name); // saveState内のGASマージで復活させない
+    saveState(false);openInfoModal(`✅ ${name}の提出履歴・チェックをクリアしました`,renderSettings);
   });
 }
 function resetCastAll(){
@@ -4953,10 +4957,10 @@ function resetCastAll(){
     Object.keys(S.submissions).forEach(k=>{if(k.startsWith(name+'_'))delete S.submissions[k];});
     Object.keys(S.checkData).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkData[k];});
     Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
-    // ロック解除
     if(S.castLocks&&S.castLocks[name]) delete S.castLocks[name];
     clearLock('cast_'+name);
-    saveState(false);openInfoModal(`✅ ${name}の全データをクリアしました（ロックも解除）`,renderSettings);
+    _resetCastNames.add(name); // saveState内のGASマージで復活させない
+    saveState(false);openInfoModal(`✅ ${name}の全データをクリアしました`,renderSettings);
   });
 }
 
