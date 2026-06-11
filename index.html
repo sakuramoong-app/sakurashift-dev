@@ -4926,7 +4926,10 @@ function resetCastShift(){
   const name=getResetCastName();if(!name)return;
   openConfirmModal(`「${name}」のシフト入力をクリアしますか？`,()=>{
     Object.keys(S.shifts).forEach(k=>{if(k.startsWith(name+'_'))delete S.shifts[k];});
-    saveState(false);openInfoModal(`✅ ${name}のシフト入力をクリアしました`,renderSettings);
+    // ロック解除
+    if(S.castLocks&&S.castLocks[name]) delete S.castLocks[name];
+    clearLock('cast_'+name);
+    saveState(false);openInfoModal(`✅ ${name}のシフト入力をクリアしました（ロックも解除）`,renderSettings);
   });
 }
 function resetCastSubmission(){
@@ -4935,7 +4938,10 @@ function resetCastSubmission(){
     Object.keys(S.submissions).forEach(k=>{if(k.startsWith(name+'_'))delete S.submissions[k];});
     Object.keys(S.checkData).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkData[k];});
     Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
-    saveState(false);openInfoModal(`✅ ${name}の提出履歴・チェックをクリアしました`,renderSettings);
+    // ロック解除
+    if(S.castLocks&&S.castLocks[name]) delete S.castLocks[name];
+    clearLock('cast_'+name);
+    saveState(false);openInfoModal(`✅ ${name}の提出履歴・チェックをクリアしました（ロックも解除）`,renderSettings);
   });
 }
 function resetCastAll(){
@@ -4945,7 +4951,10 @@ function resetCastAll(){
     Object.keys(S.submissions).forEach(k=>{if(k.startsWith(name+'_'))delete S.submissions[k];});
     Object.keys(S.checkData).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkData[k];});
     Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
-    saveState(false);openInfoModal(`✅ ${name}の全データをクリアしました`,renderSettings);
+    // ロック解除
+    if(S.castLocks&&S.castLocks[name]) delete S.castLocks[name];
+    clearLock('cast_'+name);
+    saveState(false);openInfoModal(`✅ ${name}の全データをクリアしました（ロックも解除）`,renderSettings);
   });
 }
 
