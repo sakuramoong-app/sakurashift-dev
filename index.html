@@ -4924,12 +4924,14 @@ function getResetCastName(){
 }
 function resetCastShift(){
   const name=getResetCastName();if(!name)return;
-  openConfirmModal(`「${name}」のシフト入力をクリアしますか？`,()=>{
+  openConfirmModal(`「${name}」のシフト入力をクリアしますか？
+（提出履歴もクリアしてカレンダーのロックを解除します）`,()=>{
     Object.keys(S.shifts).forEach(k=>{if(k.startsWith(name+'_'))delete S.shifts[k];});
-    // ロック解除
-    if(S.castLocks&&S.castLocks[name]) delete S.castLocks[name];
-    clearLock('cast_'+name);
-    saveState(false);openInfoModal(`✅ ${name}のシフト入力をクリアしました（ロックも解除）`,renderSettings);
+    // submissionsも削除しないとカレンダーが🔒のままになる
+    Object.keys(S.submissions).forEach(k=>{if(k.startsWith(name+'_'))delete S.submissions[k];});
+    Object.keys(S.checkData).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkData[k];});
+    Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
+    saveState(false);openInfoModal(`✅ ${name}のシフトと提出履歴をクリアしました`,renderSettings);
   });
 }
 function resetCastSubmission(){
