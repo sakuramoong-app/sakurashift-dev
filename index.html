@@ -1642,17 +1642,20 @@ const AUTO_LOGOUT_MS = 30 * 60 * 1000; // 30分
 const NTF_POLL_MS = 2 * 60 * 1000; // 通知ポーリング間隔：2分
 let _ntfPollTimer = null;
 
+async function pollNotifications(){
+  if(!currentType) return;
+  if(currentType==='cast' && currentUser){
+    await fetchAndMergeNotifications('cast', currentUser.name);
+  } else if(currentType==='staff'){
+    await fetchAndMergeNotifications('staff', '');
+  }
+  updateNtfBadge();
+}
 function startNtfPolling(){
   stopNtfPolling();
-  _ntfPollTimer = setInterval(async ()=>{
-    if(!currentUser && currentType !== 'staff') return;
-    if(currentType==='cast' && currentUser){
-      await fetchAndMergeNotifications('cast', currentUser.name);
-    } else if(currentType==='staff'){
-      await fetchAndMergeNotifications('staff', '');
-    }
-    updateNtfBadge();
-  }, NTF_POLL_MS);
+  // 即座に1回実行してからインターバル開始
+  pollNotifications();
+  _ntfPollTimer = setInterval(pollNotifications, NTF_POLL_MS);
 }
 function stopNtfPolling(){
   if(_ntfPollTimer){ clearInterval(_ntfPollTimer); _ntfPollTimer=null; }
