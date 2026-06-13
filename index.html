@@ -2961,34 +2961,55 @@ function renderStatusList(){
         const showRemind=slFilter==='unsubmitted'&&slWeekKey===getNextWk();
         const badgeCls=sub?bMap[sub.status]||'badge-gray':'badge-danger';
         const statusTxt=sub?sMap[sub.status]||sub.status:'未提出';
+        const _jumpDate=(()=>{
+          if(slFilter!=='today_input')return '';
+          const _td=new Date();_td.setHours(0,0,0,0);
+          const _ld=new Date(_td);_ld.setDate(_ld.getDate()+14);
+          const _inputDates=[];
+          Object.entries(S.submissions).forEach(([k,s])=>{
+            if(!k.startsWith(u.name+'_'))return;
+            if(!_todayInputStatuses.includes(s.status))return;
+            const _wk=k.slice(u.name.length+1);
+            getWeekDates(_wk).forEach(ds=>{
+              const _d=new Date(ds);_d.setHours(0,0,0,0);
+              if(_d<_td||_d>_ld)return;
+              const _sh=S.shifts[u.name+'_'+ds];
+              if(!_sh||_sh.start==null)return;
+              const _stores=S.castStores[u.name]||[];
+              const _items=[...new Set(['記録簿',..._stores])];
+              const _hasUnchecked=_items.some(it=>{const cd=S.checkData[u.name+'_'+_wk+'_'+ds+'_'+it];return!cd||!cd.checked;});
+              if(_hasUnchecked)_inputDates.push(ds);
+            });
+          });
+          return _inputDates.length ? _inputDates[0] : '';
+        })();
         html+=`<div style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:6px 8px;cursor:pointer"
-          onclick="jumpToInputCheck('${u.name}','${slWeekKey}')">
+          onclick="jumpToInputCheck('${u.name}','${slWeekKey}','${_jumpDate}')">
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:4px">
             <div style="flex:1;min-width:0">
               <div style="font-weight:700;font-size:12px;color:var(--navy);text-decoration:underline;text-underline-offset:2px">${u.name}</div>
               <span class="badge ${badgeCls}" style="font-size:10px;padding:1px 5px;white-space:nowrap;margin-top:2px;display:inline-block">${statusTxt}</span>
-              ${slFilter==='today_input'?(()=>{
-                const _td=new Date();_td.setHours(0,0,0,0);
-                const _ld=new Date(_td);_ld.setDate(_ld.getDate()+14);
-                const _inputDates=[];
+              ${_jumpDate?(()=>{
+                const _fmt=ds=>{const d=new Date(ds);return `${d.getMonth()+1}/${d.getDate()}(${DOWNAMES[(d.getDay()+6)%7]})`;};
+                const _td2=new Date();_td2.setHours(0,0,0,0);
+                const _ld2=new Date(_td2);_ld2.setDate(_ld2.getDate()+14);
+                const _inputDates2=[];
                 Object.entries(S.submissions).forEach(([k,s])=>{
                   if(!k.startsWith(u.name+'_'))return;
                   if(!_todayInputStatuses.includes(s.status))return;
                   const _wk=k.slice(u.name.length+1);
                   getWeekDates(_wk).forEach(ds=>{
                     const _d=new Date(ds);_d.setHours(0,0,0,0);
-                    if(_d<_td||_d>_ld)return;
+                    if(_d<_td2||_d>_ld2)return;
                     const _sh=S.shifts[u.name+'_'+ds];
                     if(!_sh||_sh.start==null)return;
                     const _stores=S.castStores[u.name]||[];
                     const _items=[...new Set(['記録簿',..._stores])];
                     const _hasUnchecked=_items.some(it=>{const cd=S.checkData[u.name+'_'+_wk+'_'+ds+'_'+it];return!cd||!cd.checked;});
-                    if(_hasUnchecked)_inputDates.push(ds);
+                    if(_hasUnchecked)_inputDates2.push(ds);
                   });
                 });
-                if(!_inputDates.length)return '';
-                const _fmt=ds=>{const d=new Date(ds);return `${d.getMonth()+1}/${d.getDate()}(${DOWNAMES[(d.getDay()+6)%7]})`;};
-                return `<div style="font-size:9px;color:#2563eb;margin-top:2px">📅 ${_inputDates.map(_fmt).join('・')}</div>`;
+                return `<div style="font-size:9px;color:#2563eb;margin-top:2px">📅 ${_inputDates2.map(_fmt).join('・')}</div>`;
               })():''}
               ${showRemind?`<label onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:2px;margin-top:3px;font-size:9px;color:var(--text2);cursor:pointer"><input type="checkbox" ${isReminded?'checked':''} onchange="toggleReminded('${u.name}','${slWeekKey}',this.checked)" style="accent-color:var(--pink2);width:10px;height:10px">催促</label>`:''}
             </div>
@@ -3007,7 +3028,7 @@ function renderStatusList(){
   document.getElementById('mainContent').innerHTML=html;
 }
 
-function jumpToInputCheck(castName,wk){
+function jumpToInputCheck(castName,wk,targetDate){
   // キャストのグループを自動検出
   const group=getGroupForName(castName);
   icSelectedGroup=group||'すべて';
@@ -3017,6 +3038,23 @@ function jumpToInputCheck(castName,wk){
   _icJumping=true; // showStaffPageのリセットを防ぐフラグ
   showStaffPage('inputcheck');
   _icJumping=false;
+  // 入力可能日の行までスクロール
+  if(targetDate){
+    setTimeout(()=>{
+      // 入力チェック画面の日付行を探してスクロール
+      const rows=document.querySelectorAll('[data-date]');
+      for(const row of rows){
+        if(row.dataset.date===targetDate){
+          row.scrollIntoView({behavior:'smooth',block:'center'});
+          // ハイライト一時表示
+          row.style.outline='3px solid #f87171';
+          row.style.outlineOffset='2px';
+          setTimeout(()=>{ row.style.outline=''; row.style.outlineOffset=''; },2000);
+          break;
+        }
+      }
+    },300);
+  }
 }
 
 function toggleReminded(castName,wk,checked){
@@ -3422,7 +3460,7 @@ function renderInputCheckBody(){
       const noShiftCls=(!sh||sh.start==null)?' ic-row-noshift':'';
       const effectiveRowClass=noShiftCls?' ':rowClass; // シフトなしは他クラスを無効化
       // ===== 上段 =====
-      html+=`<tr class="${effectiveRowClass}${evenCls}${noShiftCls} ic-row-upper ic-date-top" data-rest="${noShiftCls?'1':'0'}" data-cast="${u.name}">
+      html+=`<tr class="${effectiveRowClass}${evenCls}${noShiftCls} ic-row-upper ic-date-top" data-rest="${noShiftCls?'1':'0'}" data-cast="${u.name}" data-date="${ds}">
         <td class="ic-status-cell" rowspan="2" style="vertical-align:middle;min-width:72px;width:72px;font-size:10px;padding:4px 3px!important;word-break:keep-all;line-height:1.4">
           ${dayBadgeCls?`<span class="day-badge ${dayBadgeCls}" style="font-size:10px;white-space:normal;word-break:keep-all;line-height:1.4;text-align:center;display:block;width:100%">${dayBadge}</span>`:dayBadge}
         </td>
@@ -3955,14 +3993,16 @@ function confShiftIC(castName,wk){
   const _subKey = castName + '_' + wk;
   _subToSend[_subKey] = sub;
 
-  // --- ⑤ checkSave と confirmSave を並行送信（独立なので並行でOK）---
-  Promise.all([
-    gasCheckSave(castName, wk, _checkDataToSend, _checkNotesToSend, _subToSend),
-    gasConfirmSave(castName, wk, sub)
-  ]).then(([checkOK, confirmOK]) => {
+  // --- ⑤ checkSave → confirmSave の順で直列送信（GASのSS競合防止）---
+  gasCheckSave(castName, wk, _checkDataToSend, _checkNotesToSend, _subToSend)
+  .then(checkOK => {
+    if(!checkOK) return Promise.resolve(false);
+    return gasConfirmSave(castName, wk, sub);
+  })
+  .then(confirmOK => {
     hideSyncOverlay();
     const statusLabel = { confirmed:'確定済み', change_confirmed:'変更確定', inputting:'内勤入力中', change_inputting:'変更入力中' }[sub.status] || STATUS_LABEL[sub.status] || sub.status;
-    if (!checkOK || !confirmOK) {
+    if (!confirmOK) {
       openInfoModal('⚠️ 保存に失敗しました。時間をおいて再試行してください。', renderInputCheck);
     } else {
       openInfoModal(`✅ 更新・保存しました<br><span style="font-size:12px;color:var(--text2)">${castName}：${statusLabel}（${doneChecks}/${totalChecks}チェック）</span>`, renderInputCheck);
