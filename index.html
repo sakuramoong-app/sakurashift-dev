@@ -2608,14 +2608,9 @@ function openChangeRequestConfirm(){
   const detail=Object.entries(_changeRequestSelection).map(([ds,d])=>{
     const dt=new Date(ds);
     return `${dt.getMonth()+1}/${dt.getDate()}：${d.type==='holiday'?'🚫 休日':fmtR(d.start,d.end)}`;
-  }).join('
-');
+  }).join('\n');
   openConfirmModal(
-    `変更リクエストを送信します
-
-${detail}
-
-送信しますか？`,
+    '変更リクエストを送信します\n\n'+detail+'\n\n送信しますか？',
     ()=>sendChangeRequest(),
     ()=>openInfoModal('リクエストがキャンセルされました')
   );
@@ -2649,8 +2644,7 @@ function sendChangeRequest(){
   // 選択クリア
   _changeRequestSelection={};
   closeModal();
-  openInfoModal('リクエストが送信されました。内勤の確認をお待ちください。
-お急ぎの場合や複雑な場合はLINEにてご相談ください。',()=>renderCal());
+  openInfoModal('リクエストが送信されました。内勤の確認をお待ちください。\nお急ぎの場合や複雑な場合はLINEにてご相談ください。',()=>renderCal());
 }
 function openShiftModal(ds){
   const name=currentUser.name,sh=S.shifts[name+'_'+ds]||{},d=new Date(ds);
