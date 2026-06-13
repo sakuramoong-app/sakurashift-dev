@@ -3056,9 +3056,11 @@ function showStaffPage(p){
   const pages=['inbox','castsearch','hourly','settings','notice','logs','staffcal','castinfo','howto'];
   document.querySelectorAll('#staffTabs .page-tab').forEach((el,i)=>el.classList.toggle('active',pages[i]===p));
   try{
-    // ページ切り替え時にジャンプバーを削除
+    // ページ切り替え時にジャンプバーを削除・固定ヘッダーを制御
   const _existBar=document.getElementById('csKanaBar');
   if(_existBar&&p!=='castsearch')_existBar.remove();
+  const _fhEl=document.getElementById('icFixedHeader');
+  if(p!=='castsearch'&&_fhEl){_fhEl.style.display='none';_fhEl.innerHTML='';}
   if(p!=='castsearch'){window._csExpanded={};csQuery='';}
   ({dashboard:renderDashboard,inbox:renderInbox,castsearch:renderCastSearch,hourly:renderHourly,settings:renderSettings,notice:renderNoticeAdmin,logs:renderLogs,staffcal:renderStaffCal,castinfo:renderCastInfo,howto:renderHowTo})[p]?.();
   }catch(e){
@@ -3081,21 +3083,18 @@ function renderCastSearch(){
   const today=new Date();
   today.setHours(0,0,0,0);
 
-  // 月リスト生成（submissionsに含まれる月＋今月・来月）
+  // 月リスト生成（今月〜最終提出月のみ、過去月は除外）
+  const _todayMonth=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
   const monthSet=new Set();
-  monthSet.add(today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0'));
-  const nm=new Date(today.getFullYear(),today.getMonth()+1,1);
-  monthSet.add(nm.getFullYear()+'-'+String(nm.getMonth()+1).padStart(2,'0'));
+  monthSet.add(_todayMonth);
   Object.keys(S.submissions||{}).forEach(k=>{
-    const m=k.match(/_(\d{4}-\d{2})-\d{2}/);
-    if(m) monthSet.add(m[1]);
+    // キーは「キャスト名_YYYY-MM-DD」形式なので末尾の日付部分から月を取得
+    const m=k.match(/_(\d{4}-\d{2})-\d{2}$/);
+    if(m&&m[1]>=_todayMonth) monthSet.add(m[1]);
   });
   const allMonths=[...monthSet].sort();
-  // デフォルトは今月（初回のみ設定、以降は選択状態を維持）
-  const _todayMonth=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
-  if(!csMonthKey||!allMonths.includes(csMonthKey)){
-    csMonthKey=allMonths.includes(_todayMonth)?_todayMonth:(allMonths[0]||_todayMonth);
-  }
+  // デフォルトは今月
+  if(!csMonthKey||!allMonths.includes(csMonthKey)) csMonthKey=_todayMonth;
 
   // 選択月に含まれる週を収集
   const [my,mm_]=csMonthKey.split('-').map(Number);
@@ -3228,12 +3227,10 @@ function renderCastSearch(){
             mainHtml+=`<div style="border:1.5px solid #93c5fd;border-top:none;border-radius:0 0 8px 8px;background:#fafafa;padding:8px">`;
             inputWks.forEach(wk=>{
               const isCurrentWk=wk===_currWkTI;
-              if(_csHideRest) _restCollapsed[u.name]=true;
               const savedWk=icWeekKey,savedQ=icSearchQuery,savedGrp=icSelectedGroup;
               icWeekKey=wk; icSearchQuery=u.name; icSelectedGroup='すべて';
               mainHtml+=renderInputCheckForCast(u.name, wk, isCurrentWk?wk:'');
               icWeekKey=savedWk; icSearchQuery=savedQ; icSelectedGroup=savedGrp;
-              if(!_csHideRest) delete _restCollapsed[u.name];
             });
             mainHtml+=`</div>`;
           }
@@ -3331,12 +3328,10 @@ function renderCastSearch(){
               // 週ラベルは不要（テーブルの赤枠で今週を示す）
               // renderInputCheckForCastにtodayWkを渡して赤枠を付ける
               // 休日折りたたみ：_csHideRestがtrueならrestRowsを折りたたむ
-              if(_csHideRest) _restCollapsed[u.name]=true;
               const savedWk=icWeekKey, savedQ=icSearchQuery, savedGrp=icSelectedGroup;
               icWeekKey=wk; icSearchQuery=u.name; icSelectedGroup='すべて';
               mainHtml+=renderInputCheckForCast(u.name, wk, isCurrentWk?wk:'');
               icWeekKey=savedWk; icSearchQuery=savedQ; icSelectedGroup=savedGrp;
-              if(!_csHideRest) delete _restCollapsed[u.name];
             });
           }
           mainHtml+=`</div>`;
@@ -3404,18 +3399,25 @@ function renderCastSearch(){
     document.body.appendChild(bar);
   }
 
-  document.getElementById('mainContent').innerHTML=`<div class="card" style="padding-left:32px">
+  // 固定ヘッダー（icFixedHeader）に検索窓・入力者を表示
+  const _fhCS=document.getElementById('icFixedHeader');
+  if(_fhCS){
+    _fhCS.style.display='block';
+    _fhCS.innerHTML=searchHtml;
+    const _inp=_fhCS.querySelector('#csQueryInput');
+    if(_inp) _inp.addEventListener('input',()=>{csQuery=_inp.value;renderCastSearch();});
+    const _sel=_fhCS.querySelector('#csStaffSel');
+    if(_sel){
+      if(currentStaffName) _sel.value=currentStaffName;
+      _sel.addEventListener('change',()=>{currentStaffName=_sel.value;renderCastSearch();});
+    }
+  }
+
+  document.getElementById('mainContent').innerHTML=`<div class="card" style="padding-left:32px;padding-top:4px">
     <div class="card-title" style="margin-bottom:8px"><span class="ct-icon ct-pink">🔍</span>キャスト検索</div>
     ${tabHtml}
-    ${searchHtml}
     ${mainHtml}
   </div>`;
-
-  const inp=document.getElementById('csQueryInput');
-  if(inp&&csQuery){inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);}
-  // 入力者プルダウンの値を復元
-  const _csSel=document.getElementById('csStaffSel');
-  if(_csSel&&currentStaffName) _csSel.value=currentStaffName;
 }
 
 // あかさたなアコーディオンの開閉
@@ -3476,7 +3478,19 @@ function renderInputCheckForCast(castName, wk, todayWk){
   // 今週フラグを設定（テーブルwrapperの赤枠判定用）
   _csCurrentWeek=todayWk||'';
   icWeekKey=wk; icSearchQuery=castName; icSelectedGroup='すべて'; window.icShowAll=false;
+  // _csHideRestがtrueなら休日行を折りたたむ
+  if(_csHideRest) _restCollapsed[castName]=true;
+  else delete _restCollapsed[castName];
   renderInputCheckBody();
+  // 休日折りたたみをDOMに適用してからHTMLを取得
+  if(_csHideRest){
+    const tbl=tmpDiv.querySelector('#tbl_'+castName);
+    if(tbl){
+      tbl.querySelectorAll('tr[data-rest="1"][data-cast="'+castName+'"]').forEach(tr=>{
+        tr.style.display='none';
+      });
+    }
+  }
   const result=tmpDiv.innerHTML;
   icWeekKey=savedWk; icSearchQuery=savedQ; icSelectedGroup=savedGrp; window.icShowAll=savedAll;
   _csCurrentWeek='';
