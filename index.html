@@ -3074,7 +3074,7 @@ function showStaffPage(p){
 // キャスト検索（旧ステータス一覧＋入力チェック統合）
 let csWeekKey=''; // キャスト検索の選択週
 let csMonthKey=''; // キャスト検索の選択月（YYYY-MM）
-let csViewMode='week'; // 'week' | 'month' | 'today_input'
+let csViewMode='month'; // 'week' | 'month' | 'today_input'
 let csQuery=''; // 検索窓
 
 function renderCastSearch(){
@@ -3087,11 +3087,15 @@ function renderCastSearch(){
   const nm=new Date(today.getFullYear(),today.getMonth()+1,1);
   monthSet.add(nm.getFullYear()+'-'+String(nm.getMonth()+1).padStart(2,'0'));
   Object.keys(S.submissions||{}).forEach(k=>{
-    const m=k.match(/_(\d{4}-\d{2})-\d{2}$/);
+    const m=k.match(/_(\d{4}-\d{2})-\d{2}/);
     if(m) monthSet.add(m[1]);
   });
   const allMonths=[...monthSet].sort();
-  if(!csMonthKey||!allMonths.includes(csMonthKey)) csMonthKey=allMonths[0]||today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+  // デフォルトは今月（初回のみ設定、以降は選択状態を維持）
+  const _todayMonth=today.getFullYear()+'-'+String(today.getMonth()+1).padStart(2,'0');
+  if(!csMonthKey||!allMonths.includes(csMonthKey)){
+    csMonthKey=allMonths.includes(_todayMonth)?_todayMonth:(allMonths[0]||_todayMonth);
+  }
 
   // 選択月に含まれる週を収集
   const [my,mm_]=csMonthKey.split('-').map(Number);
@@ -3113,7 +3117,7 @@ function renderCastSearch(){
   // 今週のweekKey
   const todayWk=getWeekKey(today);
 
-  // 月タブ＋本日入力可能（横並び）
+  // 月タブ＋本日入力可能＋休日を折りたたむ（横並び）
   const isTodayInput=csViewMode==='today_input';
   let tabHtml=`<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">`;
   allMonths.forEach(mo=>{
@@ -3125,13 +3129,26 @@ function renderCastSearch(){
   });
   tabHtml+=`<button onclick="csViewMode='today_input';renderCastSearch()"
     style="padding:5px 14px;border-radius:16px;border:2px solid ${isTodayInput?'#0284c7':'var(--border)'};background:${isTodayInput?'#0284c7':'#fff'};font-size:13px;font-weight:${isTodayInput?'700':'500'};cursor:pointer;color:${isTodayInput?'#fff':'var(--text2)'}">📅 本日入力可能</button>`;
+  // 休日を折りたたむトグル
+  tabHtml+=`<button onclick="_csHideRest=!_csHideRest;renderCastSearch()"
+    style="padding:5px 14px;border-radius:16px;border:2px solid ${_csHideRest?'#7c3aed':'var(--border)'};background:${_csHideRest?'#7c3aed':'#fff'};font-size:13px;font-weight:${_csHideRest?'700':'500'};cursor:pointer;color:${_csHideRest?'#fff':'var(--text2)'}">🗂️ 休日を折りたたむ</button>`;
   tabHtml+=`</div>`;
 
-  // キャスト検索窓
-  const searchHtml=`<div style="margin-bottom:12px">
+  // キャスト検索窓（入力者プルダウンと横並び）
+  const _csStaffOpts=(S.staffList||[]).map(s=>`<option value="${s.name}" style="color:${s.color};font-weight:700">${s.name}</option>`).join('');
+  const _csStaffColor=(S.staffList||[]).find(s=>s.name===currentStaffName)?.color||'var(--border)';
+  const searchHtml=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
     <input type="text" id="csQueryInput" class="form-input" placeholder="キャスト名（完全一致）" value="${escHtml(csQuery)}"
-      style="width:100%;max-width:240px;font-size:13px;padding:7px 10px"
+      style="width:160px;font-size:13px;padding:7px 10px"
       oninput="csQuery=this.value;renderCastSearch()">
+    <div style="display:flex;align-items:center;gap:4px">
+      <label style="font-size:12px;color:var(--text2);white-space:nowrap">入力者：</label>
+      <select class="form-select" id="csStaffSel" style="width:auto;min-width:100px;font-size:12px;border-color:${_csStaffColor};color:var(--text);font-weight:600"
+        onchange="currentStaffName=this.value;renderCastSearch()">
+        <option value="">— 選択 —</option>${_csStaffOpts}
+      </select>
+      ${currentStaffName?`<span style="width:10px;height:10px;border-radius:50%;background:${_csStaffColor};display:inline-block"></span><span style="font-size:11px;font-weight:700;color:${_csStaffColor}">${currentStaffName}</span>`:''}
+    </div>
   </div>`;
 
   const sMap=STATUS_LABEL;
@@ -3141,20 +3158,24 @@ function renderCastSearch(){
   let mainHtml='';
 
   if(csViewMode==='today_input'){
-    // 本日入力可能モード
+    // 本日入力可能モード：アコーディオン形式で入力チェックを表示
     const limit=new Date(today);limit.setDate(limit.getDate()+14);
+    if(!window._csExpanded) window._csExpanded={};
     let anyFound=false;
+    const todayInputCasts=[]; // {u, wks:[入力可能な週のSet]}
     KANA_GROUPS.forEach(g=>{
       const groupCasts=(S.castList||[]).filter(u=>{
         if(csQuery&&u.name!==csQuery)return false;
         return g.chars.includes(u.name[0]);
       });
       groupCasts.forEach(u=>{
-        const inputDates=[];
+        // 今日〜2週間後に入力可能なシフトがある週を収集
+        const inputWks=new Set();
         Object.entries(S.submissions||{}).forEach(([k,s])=>{
           if(!k.startsWith(u.name+'_'))return;
           if(!_todayInputStatuses.includes(s.status))return;
           const wk2=k.slice(u.name.length+1);
+          let hasInRange=false;
           (getWeekDates(wk2)||[]).forEach(ds=>{
             const _d=new Date(ds);_d.setHours(0,0,0,0);
             if(_d<today||_d>limit)return;
@@ -3163,20 +3184,93 @@ function renderCastSearch(){
             const stores=S.castStores[u.name]||[];
             const items=[...new Set(['記録簿',...stores])];
             const hasUnchecked=items.some(it=>{const cd=S.checkData[u.name+'_'+wk2+'_'+ds+'_'+it];return!cd||!cd.checked;});
-            if(hasUnchecked)inputDates.push({ds,wk:wk2});
+            if(hasUnchecked)hasInRange=true;
           });
+          if(hasInRange)inputWks.add(wk2);
         });
-        if(!inputDates.length)return;
+        if(!inputWks.size)return;
         anyFound=true;
-        const fmt=ds=>{const d=new Date(ds);return `${d.getMonth()+1}/${d.getDate()}(${['日','月','火','水','木','金','土'][d.getDay()]})`;};
-        mainHtml+=`<div id="cs-cast-${u.name}" style="background:#fff;border:1.5px solid #93c5fd;border-radius:8px;padding:8px 12px;cursor:pointer;margin-bottom:6px"
-          onclick="jumpToInputCheck('${u.name}','${inputDates[0].wk}','${inputDates[0].ds}')">
-          <div style="font-weight:700;font-size:13px;color:var(--navy)">${escHtml(u.name)}</div>
-          <div style="font-size:10px;color:#2563eb;margin-top:2px">📅 ${inputDates.map(x=>fmt(x.ds)).join('・')}</div>
-        </div>`;
+        todayInputCasts.push({u,inputWks:[...inputWks].sort()});
       });
     });
-    if(!anyFound) mainHtml=`<p style="color:var(--text2);font-size:13px;padding:8px 0">本日入力可能のキャストはいません</p>`;
+    if(!anyFound){
+      mainHtml=`<p style="color:var(--text2);font-size:13px;padding:8px 0">本日入力可能のキャストはいません</p>`;
+    } else {
+      // あかさたなグループ別にアコーディオン表示
+      const _currWkTI=getWeekKey(today);
+      KANA_GROUPS.forEach(g=>{
+        const gCasts=todayInputCasts.filter(({u})=>g.chars.includes(u.name[0]));
+        if(!gCasts.length)return;
+        mainHtml+=`<div id="cs-group-${g.label}" style="margin-bottom:4px">
+          <div style="font-size:12px;font-weight:700;color:var(--text2);padding:6px 0 4px;border-bottom:1px solid var(--border);margin-bottom:4px">${g.label}行</div>`;
+        gCasts.forEach(({u,inputWks})=>{
+          const isExpanded=!!window._csExpanded[u.name];
+          const _currSub=S.submissions[u.name+'_'+_currWkTI];
+          const _nextSub=S.submissions[u.name+'_'+getNextWk()];
+          const _mkBadge=(sub,label)=>{
+            if(!sub)return `<span style="font-size:10px;color:var(--text3)">${label}：—</span>`;
+            return `<span style="font-size:10px;color:var(--text2)">${label}：<span class="badge ${bMap[sub.status]||'badge-gray'}" style="font-size:9px;padding:1px 4px">${sMap[sub.status]||sub.status}</span></span>`;
+          };
+          const statusBadge=`<div style="display:flex;flex-direction:column;align-items:flex-end;gap:2px">
+            ${_mkBadge(_currSub,'今週')}
+            ${_mkBadge(_nextSub,'来週')}
+          </div>`;
+          mainHtml+=`<div id="cs-cast-${u.name}-wrap" style="margin-bottom:5px">
+            <div onclick="toggleCsCast('${u.name}')"
+              style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#fff;border:1.5px solid #93c5fd;border-radius:${isExpanded?'8px 8px 0 0':'8px'};cursor:pointer">
+              <div style="display:flex;align-items:center;gap:8px">
+                <span style="font-size:14px">${isExpanded?'▼':'▶'}</span>
+                <span style="font-weight:700;font-size:13px;color:var(--navy)">${escHtml(u.name)}</span>
+              </div>
+              ${statusBadge}
+            </div>`;
+          if(isExpanded){
+            mainHtml+=`<div style="border:1.5px solid #93c5fd;border-top:none;border-radius:0 0 8px 8px;background:#fafafa;padding:8px">`;
+            inputWks.forEach(wk=>{
+              const isCurrentWk=wk===_currWkTI;
+              if(_csHideRest) _restCollapsed[u.name]=true;
+              const savedWk=icWeekKey,savedQ=icSearchQuery,savedGrp=icSelectedGroup;
+              icWeekKey=wk; icSearchQuery=u.name; icSelectedGroup='すべて';
+              mainHtml+=renderInputCheckForCast(u.name, wk, isCurrentWk?wk:'');
+              icWeekKey=savedWk; icSearchQuery=savedQ; icSelectedGroup=savedGrp;
+              if(!_csHideRest) delete _restCollapsed[u.name];
+            });
+            mainHtml+=`</div>`;
+          }
+          mainHtml+=`</div>`;
+        });
+        mainHtml+=`</div>`;
+      });
+      // その他グループ
+      const otherTI=todayInputCasts.filter(({u})=>!KANA_GROUPS.some(g=>g.chars.includes(u.name[0])));
+      if(otherTI.length){
+        mainHtml+=`<div id="cs-group-その他" style="margin-bottom:4px">
+          <div style="font-size:12px;font-weight:700;color:var(--text2);padding:6px 0 4px;border-bottom:1px solid var(--border);margin-bottom:4px">その他</div>`;
+        otherTI.forEach(({u,inputWks})=>{
+          const isExpanded=!!window._csExpanded[u.name];
+          const latestSub=inputWks.map(wk=>S.submissions[u.name+'_'+wk]).filter(Boolean).slice(-1)[0];
+          const statusBadge=latestSub?`<span class="badge ${bMap[latestSub.status]||'badge-gray'}" style="font-size:10px;padding:1px 5px">${sMap[latestSub.status]||latestSub.status}</span>`:``;
+          mainHtml+=`<div id="cs-cast-${u.name}-wrap" style="margin-bottom:5px">
+            <div onclick="toggleCsCast('${u.name}')"
+              style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#fff;border:1.5px solid #93c5fd;border-radius:${isExpanded?'8px 8px 0 0':'8px'};cursor:pointer">
+              <div style="display:flex;align-items:center;gap:8px"><span>${isExpanded?'▼':'▶'}</span><span style="font-weight:700;font-size:13px;color:var(--navy)">${escHtml(u.name)}</span></div>
+              ${statusBadge}
+            </div>`;
+          if(isExpanded){
+            mainHtml+=`<div style="border:1.5px solid #93c5fd;border-top:none;border-radius:0 0 8px 8px;background:#fafafa;padding:8px">`;
+            inputWks.forEach(wk=>{
+              const savedWk=icWeekKey,savedQ=icSearchQuery,savedGrp=icSelectedGroup;
+              icWeekKey=wk; icSearchQuery=u.name; icSelectedGroup='すべて';
+              mainHtml+=renderInputCheckForCast(u.name, wk, wk===getWeekKey(today)?wk:'');
+              icWeekKey=savedWk; icSearchQuery=savedQ; icSelectedGroup=savedGrp;
+            });
+            mainHtml+=`</div>`;
+          }
+          mainHtml+=`</div>`;
+        });
+        mainHtml+=`</div>`;
+      }
+    }
 
   } else {
     // 月表示モード：あかさたなアコーディオン
@@ -3233,17 +3327,16 @@ function renderCastSearch(){
             mainHtml+=`<p style="color:var(--text2);font-size:12px;padding:4px">この月の週データはありません</p>`;
           } else {
             monthWks.forEach(wk=>{
-              const wkStart=new Date(wk+'T12:00:00');
-              const wkEnd=new Date(wkStart);wkEnd.setDate(wkStart.getDate()+6);
               const isCurrentWk=wk===todayWk;
-              // 週ラベル（今週は赤枠）
-              mainHtml+=`<div style="font-size:11px;font-weight:700;color:${isCurrentWk?'#dc2626':'var(--text2)'};margin:8px 0 4px;padding:3px 8px;background:${isCurrentWk?'#fef2f2':'transparent'};border-radius:4px;${isCurrentWk?'border:1.5px solid #dc2626;':''}">${getWeekLabel(wk)}${isCurrentWk?' ◀ 今週':''}</div>`;
-              // 入力チェック描画（icWeekKey・icSearchQueryを一時設定して既存関数を流用）
+              // 週ラベルは不要（テーブルの赤枠で今週を示す）
+              // renderInputCheckForCastにtodayWkを渡して赤枠を付ける
+              // 休日折りたたみ：_csHideRestがtrueならrestRowsを折りたたむ
+              if(_csHideRest) _restCollapsed[u.name]=true;
               const savedWk=icWeekKey, savedQ=icSearchQuery, savedGrp=icSelectedGroup;
               icWeekKey=wk; icSearchQuery=u.name; icSelectedGroup='すべて';
-              // renderInputCheckBodyはicBodyElに書き込むので直接HTMLを生成
-              mainHtml+=renderInputCheckForCast(u.name, wk, today);
+              mainHtml+=renderInputCheckForCast(u.name, wk, isCurrentWk?wk:'');
               icWeekKey=savedWk; icSearchQuery=savedQ; icSelectedGroup=savedGrp;
+              if(!_csHideRest) delete _restCollapsed[u.name];
             });
           }
           mainHtml+=`</div>`;
@@ -3320,17 +3413,51 @@ function renderCastSearch(){
 
   const inp=document.getElementById('csQueryInput');
   if(inp&&csQuery){inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);}
+  // 入力者プルダウンの値を復元
+  const _csSel=document.getElementById('csStaffSel');
+  if(_csSel&&currentStaffName) _csSel.value=currentStaffName;
 }
 
 // あかさたなアコーディオンの開閉
+// 休日折りたたみのグローバルフラグ
+let _csHideRest=false;
+
 function toggleCsCast(castName){
   if(!window._csExpanded)window._csExpanded={};
   window._csExpanded[castName]=!window._csExpanded[castName];
   renderCastSearch();
+  // 展開した場合は未チェックのある最初の日付へジャンプ
+  if(window._csExpanded[castName]){
+    setTimeout(()=>jumpToFirstUncheckInCast(castName),350);
+  }
+}
+
+// 展開したキャストの未チェック最初の日付にジャンプ
+function jumpToFirstUncheckInCast(castName){
+  // まずキャスト全体のwrapを探す
+  const castWrap=document.getElementById('cs-cast-'+CSS.escape(castName)+'-wrap');
+  if(!castWrap)return;
+  // その中で未チェックセルを持つ行を探す
+  const uncheckedCell=castWrap.querySelector('td input[type="checkbox"]:not(:checked):not([disabled])');
+  if(uncheckedCell){
+    const row=uncheckedCell.closest('tr');
+    if(row){
+      row.scrollIntoView({behavior:'smooth',block:'center'});
+      row.style.outline='3px solid #f87171';
+      row.style.outlineOffset='1px';
+      setTimeout(()=>{row.style.outline='';row.style.outlineOffset='';},2000);
+      return;
+    }
+  }
+  // 未チェックセルが見つからなければキャストのwrap自体へ
+  castWrap.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
 // キャスト1人分・1週分の入力チェックHTMLを生成（renderInputCheckBodyのロジックを流用）
-function renderInputCheckForCast(castName, wk, today){
+// グローバル：renderInputCheckBodyで今週判定に使う現在のwk
+let _csCurrentWeek='';
+
+function renderInputCheckForCast(castName, wk, todayWk){
   const u=S.castList.find(x=>x.name===castName);
   if(!u)return '';
   const sub=S.submissions[castName+'_'+wk];
@@ -3341,18 +3468,18 @@ function renderInputCheckForCast(castName, wk, today){
     }
     return `<div style="padding:6px 10px;background:#f1f5f9;border-radius:6px;margin-bottom:4px;font-size:12px;color:var(--text2)">未提出</div>`;
   }
-  // 既存のrenderInputCheckBodyのキャスト1人分描画ロジックをicWeekKeyに頼らず直接呼ぶ
-  // icWeekKey・icSearchQueryを一時的に設定してrenderInputCheckBodyのDOM出力を取得する方法は
-  // icBodyElが必要なため使えない。代わりにdivを一時生成して描画
   const tmpDiv=document.createElement('div');
   tmpDiv.id='icBody';
   tmpDiv.style.display='none';
   document.body.appendChild(tmpDiv);
   const savedWk=icWeekKey,savedQ=icSearchQuery,savedGrp=icSelectedGroup,savedAll=window.icShowAll;
+  // 今週フラグを設定（テーブルwrapperの赤枠判定用）
+  _csCurrentWeek=todayWk||'';
   icWeekKey=wk; icSearchQuery=castName; icSelectedGroup='すべて'; window.icShowAll=false;
   renderInputCheckBody();
   const result=tmpDiv.innerHTML;
   icWeekKey=savedWk; icSearchQuery=savedQ; icSelectedGroup=savedGrp; window.icShowAll=savedAll;
+  _csCurrentWeek='';
   tmpDiv.remove();
   return result;
 }
@@ -3925,18 +4052,9 @@ function renderInputCheckBody(){
       html+=`</div>`;
     }
 
-    const hasRestDays=dates.some(ds=>{const sh2=S.shifts[u.name+'_'+ds];return !sh2||sh2.start==null;});
-    const _viewMode=_icViewMode[u.name]||'week';
-    const _wkDate=new Date(icWeekKey);
-    const _monthLabel=`${_wkDate.getFullYear()}年${_wkDate.getMonth()+1}月`;
-    html+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
-      <div style="display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:11px">
-        <button onclick="_icViewMode['${u.name}']='week';renderInputCheckBody()" style="padding:3px 10px;background:${_viewMode==='week'?'var(--navy)':'#f8fafc'};color:${_viewMode==='week'?'#fff':'var(--text2)'};border:none;cursor:pointer;font-size:11px">週</button>
-        <button onclick="_icViewMode['${u.name}']='month';renderInputCheckBody()" style="padding:3px 10px;background:${_viewMode==='month'?'var(--navy)':'#f8fafc'};color:${_viewMode==='month'?'#fff':'var(--text2)'};border:none;cursor:pointer;font-size:11px">${_monthLabel}</button>
-      </div>
-      ${hasRestDays&&_viewMode==='week'?`<button id="restToggle_${u.name}" onclick="toggleRestRows('${u.name}')" style="font-size:11px;padding:3px 10px;border:1px solid var(--border);border-radius:12px;background:#f8fafc;cursor:pointer;color:var(--text2)">🗂️ 休日を折りたたむ</button>`:''}
-    </div>`;
-    html+=`<div class="ic-table-wrap" id="wrap_${u.name}" onscroll="icScrollPositions['${u.name}']=this.scrollLeft">
+
+    const _isThisWkIC=typeof _csCurrentWeek!=='undefined'&&_csCurrentWeek===icWeekKey;
+    html+=`<div class="ic-table-wrap" id="wrap_${u.name}" onscroll="icScrollPositions['${u.name}']=this.scrollLeft" style="${_isThisWkIC?'border:2px solid #dc2626;border-radius:6px;':''}">
     <table class="ic-table" id="tbl_${u.name}">
       <thead>
         <tr>
