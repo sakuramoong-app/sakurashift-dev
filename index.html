@@ -337,12 +337,11 @@ tr.ic-row-lower td{border-bottom:2px solid #b0bec5!important}
     <button class="page-tab" onclick="showCastPage('notifications')" id="castNtfTab">🔔 通知<span class="ntf-badge hidden" id="castNtfBadge">0</span></button>
   </div>
   <div id="staffTabs" class="page-tabs hidden">
-    <button class="page-tab active" onclick="showStaffPage('statuslist')">📊 ステータス一覧</button>
-    <button class="page-tab" onclick="showStaffPage('inputcheck')">✅ 入力チェック</button>
+    <button class="page-tab active" onclick="showStaffPage('inbox')" id="staffNtfTab">📬 受信ボックス<span class="ntf-badge hidden" id="staffNtfBadge">0</span></button>
+    <button class="page-tab" onclick="showStaffPage('castsearch')">🔍 キャスト検索</button>
     <button class="page-tab" onclick="showStaffPage('hourly')">⏰ 時間帯人数</button>
     <button class="page-tab" onclick="showStaffPage('settings')">⚙️ マスタ設定</button>
     <button class="page-tab" onclick="showStaffPage('notice')">📢 お知らせ</button>
-    <button class="page-tab" onclick="showStaffPage('notifications')" id="staffNtfTab">🔔 通知<span class="ntf-badge hidden" id="staffNtfBadge">0</span></button>
     <button class="page-tab" onclick="showStaffPage('logs')">📋 ログ</button>
     <button class="page-tab" onclick="showStaffPage('staffcal')">🗓️ 内勤シフト</button>
     <button class="page-tab" onclick="showStaffPage('castinfo')">📲 配布用</button>
@@ -972,15 +971,18 @@ async function markNotificationsRead(role, castName, ids){
 // バッジ数を更新
 function updateNtfBadge(){
   if(currentType==='staff'){
-    const arr = getLocalNtf(NTF_KEY_STAFF);
-    const unread = arr.filter(n=>!n.read).length;
+    // 受信ボックスの未受理件数をバッジに表示
+    const accepted=getAccepted?getAccepted():{};
+    const inboxCount=Object.entries(S&&S.submissions||{}).filter(([k,sub])=>{
+      if(!sub||!['waiting','change_requested','change_submitted'].includes(sub.status))return false;
+      return !accepted[k];
+    }).length;
     const badge = document.getElementById('staffNtfBadge');
     if(badge){
-      badge.textContent = unread;
-      badge.classList.toggle('hidden', unread===0);
+      badge.textContent = inboxCount;
+      badge.classList.toggle('hidden', inboxCount===0);
     }
-    // タブタイトル更新
-    if(unread>0) document.title = '('+unread+') SHIFT SYSTEM';
+    if(inboxCount>0) document.title = '('+inboxCount+') SHIFT SYSTEM';
     else document.title = 'SHIFT SYSTEM';
   } else if(currentType==='cast' && currentUser){
     const arr = getLocalNtf(getCastNtfKey(currentUser.name));
@@ -1077,36 +1079,190 @@ function renderCastNotifications(){
 }
 
 // ===== 内勤通知ページ描画 =====
-function renderStaffNotifications(){
-  const arr = getLocalNtf(NTF_KEY_STAFF);
-  // 全件既読にする
-  const unreadIds = arr.filter(n=>!n.read).map(n=>n.id);
+// 受信ボックス：受理済みをlocalStorageで管理
+const INBOX_ACCEPTED_KEY = 'inbox_accepted_v1';
+function getAccepted(){ try{ return JSON.parse(localStorage.getItem(INBOX_ACCEPTED_KEY)||'{}'); }catch(e){ return {}; } }
+function setAccepted(obj){ try{ localStorage.setItem(INBOX_ACCEPTED_KEY, JSON.stringify(obj)); }catch(e){} }
+
+// 受信ボックス対象のsubmissionステータス
+const INBOX_STATUSES = ['waiting','change_requested','change_submitted'];
+
+// 受信ボックスのアイテムを収集
+function collectInboxItems(){
+  const items=[];
+  Object.entries(S.submissions||{}).forEach(([k,sub])=>{
+    if(!sub||!INBOX_STATUSES.includes(sub.status))return;
+    const match=k.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+    if(!match)return;
+    const castName=match[1], wk=match[2];
+    items.push({key:k, castName, wk, sub});
+  });
+  // 最新提出日時順
+  items.sort((a,b)=>(b.sub.submittedAt||b.sub.changeRequestedAt||'').localeCompare(a.sub.submittedAt||a.sub.changeRequestedAt||''));
+  return items;
+}
+
+// 受理処理（シフト提出・変更提出）
+function inboxAccept(key){
+  const accepted=getAccepted();
+  accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'), type:'accepted'};
+  setAccepted(accepted);
+  // キャストにメール通知（GAS経由）
+  const match=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+  if(match){
+    const castName=match[1], wk=match[2];
+    notifyCast(castName,'confirm',`${getWeekLabel(wk)} のシフト提出が受理されました ✅`);
+    addLog('accept',castName,wk,'受信ボックスから受理');
+    // GASにメール送信依頼
+    if(GAS_URL){
+      const body=new FormData();
+      body.append('action','addNotification');
+      body.append('token','sakura2025shift');
+      body.append('role','cast');
+      body.append('castName',castName);
+      body.append('type','confirm');
+      body.append('message',`${getWeekLabel(wk)} のシフト提出が受理されました ✅`);
+      fetch(GAS_URL,{method:'POST',body}).catch(e=>console.warn(e));
+    }
+  }
+  updateNtfBadge();
+  renderInbox();
+}
+
+// 変更リクエストの受理/保留/キャンセル
+function inboxRequestAction(key, action){
+  const accepted=getAccepted();
+  const match=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+  if(!match)return;
+  const castName=match[1], wk=match[2];
+  const sub=S.submissions[key];
+  if(!sub)return;
+
+  if(action==='accept'){
+    // 受理→change_unlockedに変更してGAS保存
+    accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'),type:'request_accepted'};
+    setAccepted(accepted);
+    icDoRequestChange(castName,wk,'');
+  } else if(action==='hold'){
+    accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'),type:'hold'};
+    setAccepted(accepted);
+    notifyCast(castName,'notice',`${getWeekLabel(wk)} の変更リクエストは保留中です`);
+    renderInbox();
+  } else if(action==='cancel'){
+    accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'),type:'cancelled'};
+    setAccepted(accepted);
+    // サブミッション状態を元に戻す（waiting→確定前に戻す）
+    if(sub.status==='change_requested'){
+      sub.status='waiting';
+      delete sub.changeNote;
+      delete sub.changeRequestedAt;
+      try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+      gasConfirmSave(castName,wk,sub);
+    }
+    notifyCast(castName,'notice',`${getWeekLabel(wk)} の変更リクエストはキャンセルされました`);
+    renderInbox();
+  }
+}
+
+function renderInbox(){
+  const items=collectInboxItems();
+  const accepted=getAccepted();
+
+  // 未読バッジをリセット
+  const arr=getLocalNtf(NTF_KEY_STAFF);
+  const unreadIds=arr.filter(n=>!n.read).map(n=>n.id);
   if(unreadIds.length){
-    arr.forEach(n=>{ n.read=true; });
-    saveLocalNtf(NTF_KEY_STAFF, arr);
-    markNotificationsRead('staff', '', unreadIds);
+    arr.forEach(n=>{n.read=true;});
+    saveLocalNtf(NTF_KEY_STAFF,arr);
+    markNotificationsRead('staff','',unreadIds);
     updateNtfBadge();
   }
-  let html = `<div class="card">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
-      <div class="card-title" style="margin:0"><span class="ct-icon ct-blue">🔔</span>通知（内勤）</div>
+
+  // 未受理 と 受理済みに分類
+  const pending=items.filter(it=>!accepted[it.key]);
+  const done=items.filter(it=>accepted[it.key]);
+  // accepted済みでもsubmissionsから消えたものをacceptedから追加表示しない
+  // ただしacceptedにあるがsubmissionsにないもの（受理後に完了）も表示したい
+  // → acceptedの全キーを検索して受理済みボックスに表示
+  const allAcceptedKeys=Object.keys(accepted);
+
+  let html=`<div class="card" style="margin-bottom:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div class="card-title" style="margin:0"><span class="ct-icon ct-pink">📬</span>受信ボックス</div>
       <button class="btn btn-outline btn-sm" onclick="syncAndReload()">🔄 最新取得</button>
     </div>`;
-  if(!arr.length){
-    html += `<p style="color:var(--text2);font-size:13px;padding:8px 0">通知はありません</p>`;
+
+  if(!pending.length){
+    html+=`<p style="color:var(--text2);font-size:13px;padding:8px 0">新着はありません</p>`;
   } else {
-    arr.forEach(n=>{
-      html += `<div class="ntf-item${n.read?'':' unread'}">
-        <div class="ntf-item-icon">${ntfTypeIcon(n.type)}</div>
-        <div class="ntf-item-body">
-          <div class="ntf-item-msg">${escHtml(n.message)}</div>
-          <div class="ntf-item-time">${n.createdAt}</div>
+    pending.forEach(it=>{
+      const {key,castName,wk,sub}=it;
+      const wkLabel=getWeekLabel(wk);
+      const submittedAt=sub.submittedAt||sub.changeRequestedAt||'';
+      let typeLabel='', icon='', actionHtml='';
+
+      if(sub.status==='waiting'){
+        typeLabel='シフト提出';icon='📤';
+        actionHtml=`<button class="btn btn-primary btn-sm" style="margin-top:6px" onclick="inboxAccept('${key}')">✅ 受理</button>`;
+      } else if(sub.status==='change_submitted'){
+        typeLabel='変更提出';icon='🔄';
+        actionHtml=`<button class="btn btn-primary btn-sm" style="margin-top:6px" onclick="inboxAccept('${key}')">✅ 受理</button>`;
+      } else if(sub.status==='change_requested'){
+        typeLabel='変更リクエスト';icon='📝';
+        const note=sub.changeNote?`<div style="font-size:11px;color:var(--text2);margin:3px 0;padding:4px 8px;background:#f8fafc;border-radius:5px">${escHtml(sub.changeNote)}</div>`:'';
+        actionHtml=`${note}
+          <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="inboxRequestAction('${key}','accept')">✅ 受理</button>
+            <button class="btn btn-outline btn-sm" onclick="inboxRequestAction('${key}','hold')" style="color:#d97706;border-color:#d97706">⏸ 保留</button>
+            <button class="btn btn-outline btn-sm" onclick="inboxRequestAction('${key}','cancel')" style="color:#dc2626;border-color:#dc2626">❌ キャンセル</button>
+          </div>`;
+      }
+
+      html+=`<div class="ntf-item unread" style="flex-direction:column;align-items:flex-start">
+        <div style="display:flex;align-items:center;gap:8px;width:100%">
+          <span style="font-size:18px">${icon}</span>
+          <div style="flex:1">
+            <div style="font-weight:700;font-size:13px">${escHtml(castName)} <span style="color:var(--text2);font-weight:400">/ ${wkLabel}</span></div>
+            <div style="font-size:11px;color:var(--text2)">${typeLabel} · ${submittedAt?submittedAt.slice(0,16):''}</div>
+          </div>
         </div>
+        ${actionHtml}
       </div>`;
     });
   }
-  html += `</div>`;
-  document.getElementById('mainContent').innerHTML = html;
+  html+=`</div>`;
+
+  // 受理済みボックス
+  if(allAcceptedKeys.length){
+    html+=`<div class="card">
+      <div class="card-title" style="margin-bottom:10px"><span class="ct-icon ct-blue">✅</span>受理済み</div>`;
+    // 新しい順
+    const sortedAccepted=[...allAcceptedKeys].sort((a,b)=>(accepted[b].acceptedAt||'').localeCompare(accepted[a].acceptedAt||''));
+    sortedAccepted.slice(0,30).forEach(key=>{
+      const acc=accepted[key];
+      const match=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+      if(!match)return;
+      const castName=match[1],wk=match[2];
+      const wkLabel=getWeekLabel(wk);
+      const typeMap={accepted:'シフト受理',request_accepted:'変更リクエスト受理',hold:'保留中',cancelled:'キャンセル済み'};
+      const iconMap={accepted:'✅',request_accepted:'🔓',hold:'⏸',cancelled:'❌'};
+      const colorMap={accepted:'#16a34a',request_accepted:'#7c3aed',hold:'#d97706',cancelled:'#dc2626'};
+      const t=acc.type||'accepted';
+      html+=`<div class="ntf-item" style="flex-direction:column;align-items:flex-start;opacity:.75">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:16px">${iconMap[t]||'✅'}</span>
+          <div>
+            <div style="font-weight:600;font-size:12px;color:${colorMap[t]||'#16a34a'}">${typeMap[t]||t}</div>
+            <div style="font-size:12px">${escHtml(castName)} / ${wkLabel}</div>
+            <div style="font-size:10px;color:var(--text2)">${acc.acceptedAt||''}</div>
+          </div>
+        </div>
+      </div>`;
+    });
+    html+=`</div>`;
+  }
+
+  document.getElementById('mainContent').innerHTML=html;
 }
 
 // ===== 通知を作成してGASに保存するヘルパー =====
@@ -1590,7 +1746,7 @@ async function doLogin(){
     const sb2=document.getElementById('syncBtn');if(sb2)sb2.style.display='';
     // まずローカルデータで即表示
     // ログイン前にGAS読み込み済みなのでそのまま表示
-    showStaffPage('statuslist');
+    showStaffPage('inbox');
     // 通知取得＆バッジ更新
     fetchAndMergeNotifications('staff', '').then(()=>{
       updateNtfBadge();
@@ -2760,10 +2916,10 @@ function showStaffPage(p){
   const _fh=document.getElementById('icFixedHeader');
   if(_fh&&p!=='inputcheck')_fh.style.display='none';
   if(p==='inputcheck'&&!_icJumping){icGroupMode=true;icSearchQuery='';}
-  const pages=['statuslist','inputcheck','hourly','settings','notice','notifications','logs','staffcal','castinfo','howto'];
+  const pages=['inbox','castsearch','hourly','settings','notice','logs','staffcal','castinfo','howto'];
   document.querySelectorAll('#staffTabs .page-tab').forEach((el,i)=>el.classList.toggle('active',pages[i]===p));
   try{
-    ({dashboard:renderDashboard,statuslist:renderStatusList,inputcheck:renderInputCheck,hourly:renderHourly,settings:renderSettings,notice:renderNoticeAdmin,notifications:renderStaffNotifications,logs:renderLogs,staffcal:renderStaffCal,castinfo:renderCastInfo,howto:renderHowTo})[p]?.();
+    ({dashboard:renderDashboard,inbox:renderInbox,castsearch:renderCastSearch,hourly:renderHourly,settings:renderSettings,notice:renderNoticeAdmin,logs:renderLogs,staffcal:renderStaffCal,castinfo:renderCastInfo,howto:renderHowTo})[p]?.();
   }catch(e){
     const mc=document.getElementById('mainContent');
     if(mc)mc.innerHTML=`<div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;padding:16px;margin:12px;color:#991b1b;font-family:monospace;font-size:12px">
@@ -2774,6 +2930,190 @@ function showStaffPage(p){
 
 
 // ===== STATUS LIST (ステータス一覧) =====
+// キャスト検索（旧ステータス一覧＋入力チェック統合）
+let csWeekKey=''; // キャスト検索の選択週
+let csMonthKey=''; // キャスト検索の選択月（YYYY-MM）
+let csViewMode='week'; // 'week' | 'month' | 'today_input'
+let csQuery=''; // 検索窓
+
+function renderCastSearch(){
+  // 週・月リスト生成（今週〜最終提出週）
+  let allWks=[];
+  try{
+    const today=new Date();
+    const start=new Date(today);
+    const dow=start.getDay();
+    start.setDate(start.getDate()-(dow===0?6:dow-1));
+    start.setHours(0,0,0,0);
+    const wkSet=new Set();
+    // 全提出週（今週以降）
+    Object.keys(S.submissions||{}).forEach(k=>{
+      const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);
+      if(!m)return;
+      const [y,mo,d]=m[1].split('-').map(Number);
+      const wk=getWeekKey(new Date(y,mo-1,d,12,0,0));
+      wkSet.add(wk);
+    });
+    wkSet.add(getWeekKey(today));
+    wkSet.add(getNextWk());
+    allWks=[...wkSet].sort();
+  }catch(e){allWks=[getCurrWk(),getNextWk()];}
+
+  if(!allWks.length) allWks=[getCurrWk()];
+  if(!csWeekKey||!allWks.includes(csWeekKey)) csWeekKey=allWks[0]||getCurrWk();
+
+  // 月リスト生成（submissionsに含まれる月）
+  const monthSet=new Set();
+  allWks.forEach(wk=>{
+    const mo=wk.slice(0,7); // YYYY-MM
+    monthSet.add(mo);
+  });
+  const allMonths=[...monthSet].sort();
+  if(!csMonthKey||!allMonths.includes(csMonthKey)) csMonthKey=allMonths[0]||csWeekKey.slice(0,7);
+
+  const sMap=STATUS_LABEL;
+  const bMap=STATUS_BADGE;
+
+  // 週タブ・月タブ生成
+  let tabHtml=`<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">`;
+  // 週タブ
+  allWks.forEach(wk=>{
+    const wkDate=new Date(wk+'T12:00:00');
+    const mo=wk.getMonth?wk.getMonth():wkDate.getMonth();
+    const md=wkDate.getDate();
+    const mm=wkDate.getMonth()+1;
+    const lbl=`${mm}/${md}週`;
+    const isActive=csViewMode==='week'&&csWeekKey===wk;
+    tabHtml+=`<button onclick="csViewMode='week';csWeekKey='${wk}';renderCastSearch()"
+      style="padding:4px 10px;border-radius:16px;border:2px solid ${isActive?'var(--pink)':'var(--border)'};background:${isActive?'#fdf2f8':'#fff'};font-size:11px;font-weight:${isActive?'700':'500'};cursor:pointer;color:${isActive?'var(--pink)':'var(--text2)'};white-space:nowrap">${lbl}</button>`;
+  });
+  // 月タブ
+  allMonths.forEach(mo=>{
+    const [y,m]=mo.split('-');
+    const lbl=`${parseInt(m)}月`;
+    const isActive=csViewMode==='month'&&csMonthKey===mo;
+    tabHtml+=`<button onclick="csViewMode='month';csMonthKey='${mo}';renderCastSearch()"
+      style="padding:4px 10px;border-radius:16px;border:2px solid ${isActive?'var(--navy)':'var(--border)'};background:${isActive?'#eff6ff':'#fff'};font-size:11px;font-weight:${isActive?'700':'500'};cursor:pointer;color:${isActive?'var(--navy)':'var(--text2)'};white-space:nowrap">${lbl}</button>`;
+  });
+  // 本日入力可能タブ
+  const isTodayInput=csViewMode==='today_input';
+  tabHtml+=`<button onclick="csViewMode='today_input';renderCastSearch()"
+    style="padding:4px 10px;border-radius:16px;border:2px solid ${isTodayInput?'#0284c7':'var(--border)'};background:${isTodayInput?'#e0f2fe':'#fff'};font-size:11px;font-weight:${isTodayInput?'700':'500'};cursor:pointer;color:${isTodayInput?'#0284c7':'var(--text2)'};white-space:nowrap">📅 本日入力可能</button>`;
+  tabHtml+=`</div>`;
+
+  // キャスト検索窓
+  const searchHtml=`<div style="margin-bottom:10px">
+    <input type="text" id="csQueryInput" class="form-input" placeholder="キャスト名（完全一致）" value="${escHtml(csQuery)}"
+      style="width:100%;max-width:260px;font-size:13px;padding:6px 10px"
+      oninput="csQuery=this.value;renderCastSearch()">
+  </div>`;
+
+  // キャストリスト生成
+  let castList=S.castList||[];
+  if(csQuery.trim()) castList=castList.filter(u=>u.name===csQuery.trim());
+
+  // 今日入力可能ステータス
+  const _todayInputStatuses=['waiting','change_unlocked','change_submitted','inputting','change_inputting'];
+
+  let listHtml='';
+
+  if(csViewMode==='today_input'){
+    // 本日入力可能：週をまたいで表示
+    const today2=new Date();today2.setHours(0,0,0,0);
+    const limit=new Date(today2);limit.setDate(limit.getDate()+14);
+    castList.forEach(u=>{
+      const inputDates=[];
+      Object.entries(S.submissions||{}).forEach(([k,s])=>{
+        if(!k.startsWith(u.name+'_'))return;
+        if(!_todayInputStatuses.includes(s.status))return;
+        const wk2=k.slice(u.name.length+1);
+        (getWeekDates(wk2)||[]).forEach(ds=>{
+          const _d=new Date(ds);_d.setHours(0,0,0,0);
+          if(_d<today2||_d>limit)return;
+          const sh=S.shifts[u.name+'_'+ds];
+          if(!sh||sh.start==null)return;
+          const stores=S.castStores[u.name]||[];
+          const items=[...new Set(['記録簿',...stores])];
+          const hasUnchecked=items.some(it=>{const cd=S.checkData[u.name+'_'+wk2+'_'+ds+'_'+it];return!cd||!cd.checked;});
+          if(hasUnchecked)inputDates.push({ds,wk:wk2});
+        });
+      });
+      if(!inputDates.length)return;
+      const firstDs=inputDates[0].ds, firstWk=inputDates[0].wk;
+      const fmt=ds=>{const d=new Date(ds);return `${d.getMonth()+1}/${d.getDate()}(${['日','月','火','水','木','金','土'][d.getDay()]})`;};
+      listHtml+=`<div style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:7px 10px;cursor:pointer;margin-bottom:5px"
+        onclick="jumpToInputCheck('${u.name}','${firstWk}','${firstDs}')">
+        <div style="font-weight:700;font-size:12px;color:var(--navy)">${escHtml(u.name)}</div>
+        <div style="font-size:10px;color:#2563eb;margin-top:2px">📅 ${inputDates.map(x=>fmt(x.ds)).join('・')}</div>
+      </div>`;
+    });
+    if(!listHtml) listHtml=`<p style="color:var(--text2);font-size:13px;padding:8px 0">本日入力可能のキャストはいません</p>`;
+  } else if(csViewMode==='week'){
+    // 週表示
+    castList.forEach(u=>{
+      const sub=S.submissions[u.name+'_'+csWeekKey];
+      const badgeCls=sub?bMap[sub.status]||'badge-gray':'badge-danger';
+      const statusTxt=sub?sMap[sub.status]||sub.status:'未提出';
+      listHtml+=`<div style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:7px 10px;cursor:pointer;margin-bottom:5px;display:flex;justify-content:space-between;align-items:center"
+        onclick="jumpToInputCheck('${u.name}','${csWeekKey}','')">
+        <div>
+          <div style="font-weight:700;font-size:12px;color:var(--navy)">${escHtml(u.name)}</div>
+          <span class="badge ${badgeCls}" style="font-size:10px;padding:1px 5px;margin-top:2px;display:inline-block">${statusTxt}</span>
+        </div>
+        <div style="font-size:10px;color:var(--text2);text-align:right;line-height:1.8">
+          <div>提出：${sub?.submittedAt?sub.submittedAt.slice(5,16):'—'}</div>
+          <div>確定：${sub?.confirmedAt?sub.confirmedAt.slice(5,16):'—'}</div>
+        </div>
+      </div>`;
+    });
+    if(!listHtml) listHtml=`<p style="color:var(--text2);font-size:13px;padding:8px 0">キャストがいません</p>`;
+  } else {
+    // 月表示：その月に含まれる週ごとにグループ表示
+    const monthWks=allWks.filter(wk=>wk.slice(0,7)===csMonthKey);
+    if(!monthWks.length){
+      listHtml=`<p style="color:var(--text2);font-size:13px;padding:8px 0">この月の提出データはありません</p>`;
+    } else {
+      monthWks.forEach(wk=>{
+        listHtml+=`<div style="font-size:11px;font-weight:700;color:var(--text2);margin:10px 0 4px">${getWeekLabel(wk)}</div>`;
+        castList.forEach(u=>{
+          const sub=S.submissions[u.name+'_'+wk];
+          if(!sub)return;
+          const badgeCls=bMap[sub.status]||'badge-gray';
+          const statusTxt=sMap[sub.status]||sub.status;
+          listHtml+=`<div style="background:#fff;border:1px solid var(--border);border-radius:7px;padding:6px 10px;cursor:pointer;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center"
+            onclick="jumpToInputCheck('${u.name}','${wk}','')">
+            <div>
+              <div style="font-weight:600;font-size:12px;color:var(--navy)">${escHtml(u.name)}</div>
+              <span class="badge ${badgeCls}" style="font-size:10px;padding:1px 5px;margin-top:2px;display:inline-block">${statusTxt}</span>
+            </div>
+            <div style="font-size:10px;color:var(--text2)">
+              ${sub?.confirmedAt?'確定：'+sub.confirmedAt.slice(5,16):''}
+            </div>
+          </div>`;
+        });
+      });
+    }
+  }
+
+  // ステータス説明（一番下）
+  const statusDesc=`<div style="margin-top:16px;padding:12px;background:#f8fafc;border-radius:8px;font-size:11px;color:var(--text2)">
+    <div style="font-weight:700;margin-bottom:6px">ステータス説明</div>
+    ${Object.entries(STATUS_LABEL).map(([k,v])=>`<div><span class="badge ${STATUS_BADGE[k]||'badge-gray'}" style="font-size:10px;padding:1px 5px;margin-right:4px">${v}</span>${k==='waiting'?'内勤チェック待ち':k==='inputting'?'内勤チェック入力中':k==='confirmed'?'確定済み':k==='change_unlocked'?'変更再提出可能':k==='change_submitted'?'変更シフト提出済み':k==='change_inputting'?'変更チェック入力中':k==='change_confirmed'?'変更確定済み':k==='change_requested'?'変更リクエスト中':''}</div>`).join('')}
+  </div>`;
+
+  document.getElementById('mainContent').innerHTML=`<div class="card">
+    <div class="card-title" style="margin-bottom:8px"><span class="ct-icon ct-pink">🔍</span>キャスト検索</div>
+    ${tabHtml}
+    ${searchHtml}
+    ${listHtml}
+    ${statusDesc}
+  </div>`;
+
+  // 検索窓のフォーカスを維持
+  const inp=document.getElementById('csQueryInput');
+  if(inp&&document.activeElement!==inp&&csQuery){inp.focus();inp.setSelectionRange(inp.value.length,inp.value.length);}
+}
+
 function renderStatusList(){
   // 今日から翌月末 + 全提出週（過去分も含む）を表示
   let allWks=[];
@@ -3036,7 +3376,7 @@ function jumpToInputCheck(castName,wk,targetDate){
   icSearchQuery=castName;
   icWeekKey=wk;
   _icJumping=true; // showStaffPageのリセットを防ぐフラグ
-  showStaffPage('inputcheck');
+  showStaffPage('castsearch');
   _icJumping=false;
   // 入力可能日の行までスクロール
   if(targetDate){
