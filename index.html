@@ -2743,7 +2743,9 @@ function openShiftModal(ds){
       ${(()=>{
         const _wkDs=getWeekKey(ds);
         const _subDs=S.submissions[name+'_'+_wkDs];
-        const _isUnlocked=_subDs&&_subDs.status==='change_unlocked'&&_subDs.changedDates&&_subDs.changedDates.includes(ds);
+        // 旧フロー（change_unlocked）または新フロー（_crTempUnlockWks）のどちらでも表示
+        const _isUnlocked=(_subDs&&_subDs.status==='change_unlocked'&&_subDs.changedDates&&_subDs.changedDates.includes(ds))
+          ||(_crTempUnlockWks&&_crTempUnlockWks.has(_wkDs));
         return _isUnlocked?`<button class="btn btn-warning btn-sm" onclick="setHolidayShift('${ds}')">🚫 休日にする</button>`:'';
       })()}
       <button class="btn btn-primary" onclick="saveShift('${ds}')">保存</button>
@@ -2816,19 +2818,23 @@ function setHolidayShift(ds){
   const name=currentUser.name;
   const wk=getWeekKey(ds);
   const sub=S.submissions[name+'_'+wk];
-  if(!sub||sub.status!=='change_unlocked'){
+  // 旧フロー（change_unlocked）または新フロー（_crTempUnlockWks）のどちらでも動作
+  const _isTempUnlocked=_crTempUnlockWks&&_crTempUnlockWks.has(wk);
+  if(!sub||(sub.status!=='change_unlocked'&&!_isTempUnlocked)){
     openInfoModal('この日は変更許可中ではありません');return;
   }
   // シフトを削除（休日）
   delete S.shifts[name+'_'+ds];
-  // isHolidayChangeフラグを立てる（提出はしない）
-  if(!sub.holidayChangeDates)sub.holidayChangeDates=[];
-  if(!sub.holidayChangeDates.includes(ds))sub.holidayChangeDates.push(ds);
-  // localStorageのみ保存（GASへの送信は提出ボタン押下時に行う）
+  // 新フロー：holidayChangeDatesは使わず、シフト削除のみでOK（送信時に変更検出）
+  if(sub.status==='change_unlocked'){
+    // 旧フロー：isHolidayChangeフラグを立てる
+    if(!sub.holidayChangeDates)sub.holidayChangeDates=[];
+    if(!sub.holidayChangeDates.includes(ds))sub.holidayChangeDates.push(ds);
+  }
   S._savedAt=Date.now();
   try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
   closeModal();
-  showToast('🚫 休日に設定しました。他の変更も確認して提出ボタンを押してください。');
+  showToast('🚫 休日に設定しました。変更リクエストを送信してください。');
   renderCal();
 }
 
