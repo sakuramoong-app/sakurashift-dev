@@ -1249,7 +1249,13 @@ function inboxRequestActionGroup(gid, action){
       // changeRequestsから変更日リストを保存（入力チェック表示用）
       const changeDates=(sub.changeRequests||[]).map(ch=>ch.ds);
       const holidayDates=(sub.changeRequests||[]).filter(ch=>ch.type==='holiday').map(ch=>ch.ds);
-      accepted[key+'_request']={acceptedAt:now,type:'request_accepted',changeDates,holidayDates};
+      // キャンセル時に元に戻せるよう変更前のシフトを保存
+      const originalShifts={};
+      changeDates.forEach(ds=>{
+        const origSh=S.shifts[cn+'_'+ds];
+        originalShifts[ds]=origSh?{...origSh}:null; // nullは元々シフトなし
+      });
+      accepted[key+'_request']={acceptedAt:now,type:'request_accepted',changeDates,holidayDates,originalShifts};
       // changeRequestsのシフトをS.shiftsに反映
       (sub.changeRequests||[]).forEach(ch=>{
         if(ch.type==='holiday'){
@@ -1297,15 +1303,38 @@ function inboxRequestActionGroup(gid, action){
   } else if(action==='cancel'){
     // キャンセル：変更前のシフトに戻す＋受理済みボックスへ
     keys.forEach(key=>{
+      const prevAccData=accepted[key+'_request']; // 受理時に保存した変更日情報
       accepted[key+'_request']={acceptedAt:now,type:'cancelled'};
       const m=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
       if(!m)return;
       const cn=m[1],wk=m[2];
       const sub=S.submissions[key];
       if(!sub)return;
-      // 変更リクエストの日のシフトを元に戻す（changeRequestsから逆算）
-      // change_requestedになる前のステータスに戻す
-      sub.status='confirmed'; // 確定に戻す
+
+      // シフトを元に戻す
+      if(sub.status==='change_requested'&&sub.changeRequests){
+        // 未受理キャンセル：changeRequestsから変更を取り消す
+        sub.changeRequests.forEach(ch=>{
+          // シフトを削除（受理前なので変更はS.shiftsには反映されていない）
+          // 特に何もしなくてよい（S.shiftsは変更されていないはず）
+        });
+        delete sub.changeRequests;
+        delete sub.changeRequestedAt;
+      } else if(sub.status==='change_inputting'&&prevAccData&&prevAccData.changeDates){
+        // 受理済みキャンセル：originalShiftsを使って元に戻す
+        prevAccData.changeDates.forEach(ds=>{
+          const orig=prevAccData.originalShifts&&prevAccData.originalShifts[ds];
+          if(orig===null||orig===undefined){
+            // 元々シフトなし→削除
+            delete S.shifts[cn+'_'+ds];
+          } else {
+            // 元のシフトを復元
+            S.shifts[cn+'_'+ds]={...orig};
+          }
+        });
+      }
+
+      sub.status='confirmed';
       delete sub.changeRequests;
       delete sub.changeRequestedAt;
       addLog('cancel',cn,wk,'変更リクエストキャンセル');
