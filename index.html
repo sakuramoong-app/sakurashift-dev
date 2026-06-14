@@ -1105,7 +1105,7 @@ function collectInboxItems(){
 // 受理処理（シフト提出・変更提出）
 function inboxAccept(key, silent=false){
   const accepted=getAccepted();
-  accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'), type:'accepted'};
+  accepted[key+'_submit']={acceptedAt:new Date().toLocaleString('ja-JP'), type:'accepted'};
   setAccepted(accepted);
   // キャストにメール通知（GAS経由）
   const match=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
@@ -1155,7 +1155,7 @@ function inboxRequestAction(key, action){
 
   if(action==='accept'){
     // 受理→change_requested維持（ロック中のまま）
-    accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'),type:'request_accepted'};
+    accepted[key+'_request']={acceptedAt:new Date().toLocaleString('ja-JP'),type:'request_accepted'};
     setAccepted(accepted);
     // ステータスはchange_requestedのまま（ロック維持）
     // チェック済みを自動クリア
@@ -1174,13 +1174,13 @@ function inboxRequestAction(key, action){
     gasCheckSave(castName,wk,{},{},{}).catch(e=>console.warn(e));
     renderInbox();
   } else if(action==='hold'){
-    accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'),type:'hold'};
+    accepted[key+'_request']={acceptedAt:new Date().toLocaleString('ja-JP'),type:'hold'};
     setAccepted(accepted);
     notifyCast(castName,'notice',`${getWeekLabel(wk)} の変更リクエストは保留中です`);
     renderInbox();
   } else if(action==='cancel'){
     // キャンセル→受理済みボックスへ移動、ステータスそのまま
-    accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'),type:'cancelled'};
+    accepted[key+'_request']={acceptedAt:new Date().toLocaleString('ja-JP'),type:'cancelled'};
     setAccepted(accepted);
     notifyCast(castName,'notice',`${getWeekLabel(wk)} の変更リクエストはキャンセルされました`);
     addLog('cancel',castName,wk,'変更リクエストキャンセル');
@@ -1202,12 +1202,17 @@ function renderInbox(){
     updateNtfBadge();
   }
 
+  // 受理済み判定：提出(submit)と変更リクエスト(request)を別キーで管理
+  // キー形式: 'あや_2026-06-15_submit' or 'あや_2026-06-15_request'
+  // 後方互換: 旧キー('あや_2026-06-15')も参照
+  function _isAccepted(key, sub){
+    // statusに対応するサフィックスのみチェック（別タイプの受理は無視）
+    const type=sub.status==='change_requested'?'request':'submit';
+    return !!(accepted[key+'_'+type]||accepted[key]); // 旧キーも後方互換
+  }
   // 未受理 と 受理済みに分類
-  const pending=items.filter(it=>!accepted[it.key]);
-  const done=items.filter(it=>accepted[it.key]);
-  // accepted済みでもsubmissionsから消えたものをacceptedから追加表示しない
-  // ただしacceptedにあるがsubmissionsにないもの（受理後に完了）も表示したい
-  // → acceptedの全キーを検索して受理済みボックスに表示
+  const pending=items.filter(it=>!_isAccepted(it.key,it.sub));
+  const done=items.filter(it=>_isAccepted(it.key,it.sub));
   const allAcceptedKeys=Object.keys(accepted);
 
   // 一括受理対象（waiting/change_submitted のみ）
@@ -1273,11 +1278,15 @@ function renderInbox(){
   if(allAcceptedKeys.length){
     html+=`<div class="card">
       <div class="card-title" style="margin-bottom:10px"><span class="ct-icon ct-blue">✅</span>受理済み</div>`;
-    // 新しい順
-    const sortedAccepted=[...allAcceptedKeys].sort((a,b)=>(accepted[b].acceptedAt||'').localeCompare(accepted[a].acceptedAt||''));
+    // 新しい順（サフィックス付きキーのみ、旧形式は除外）
+    const sortedAccepted=[...allAcceptedKeys]
+      .filter(k=>k.endsWith('_submit')||k.endsWith('_request')||k.match(/^.+_\d{4}-\d{2}-\d{2}$/)) // 旧形式も表示
+      .sort((a,b)=>(accepted[b].acceptedAt||'').localeCompare(accepted[a].acceptedAt||''));
     sortedAccepted.slice(0,30).forEach(key=>{
       const acc=accepted[key];
-      const match=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+      // サフィックスを除いたbaseキーでキャスト名・週を取得
+      const baseKey=key.replace(/_submit$|_request$/,'');
+      const match=baseKey.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
       if(!match)return;
       const castName=match[1],wk=match[2];
       const wkLabel=getWeekLabel(wk);
@@ -5825,6 +5834,15 @@ function resetAll(){
     S.shifts={};
     // 全キャストをリセット対象としてマーク（マージで復活しないよう）
     (S.castList||[]).forEach(u=>_resetCastNames.add(u.name));
+    // 通知・受理済みもクリア
+    try{localStorage.removeItem(NTF_KEY_STAFF);}catch(e){}
+    try{localStorage.removeItem(INBOX_ACCEPTED_KEY);}catch(e){}
+    try{
+      // キャスト全員の通知もクリア
+      (S.castList||[]).forEach(u=>{
+        localStorage.removeItem(getCastNtfKey(u.name));
+      });
+    }catch(e){}
     try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
     // GASにも直接クリア済みデータを上書き送信
     if(GAS_URL){
