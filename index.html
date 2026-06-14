@@ -2859,9 +2859,18 @@ function crStartTempUnlock(){
         const wk=k.slice(name.length+1);
         _crTempUnlockWks.add(wk);
         // 解除前のシフトをバックアップ
+        // change_inputtingの週は前回変更済みの日のバックアップをnullにして「変更あり」として検出できるようにする
+        const _prevAccepted=getAccepted();
+        const _prevReqData=_prevAccepted[name+'_'+wk+'_request'];
+        const _prevChangeDates=_prevReqData&&_prevReqData.changeDates||[];
         getWeekDates(wk).forEach(ds=>{
           const sh=S.shifts[name+'_'+ds];
-          if(sh){_crShiftBackup[name+'_'+ds]={...sh};}
+          // 前回変更済みの日はバックアップをundefined（null相当）にして変更検出できるようにする
+          if(_prevChangeDates.includes(ds)){
+            _crShiftBackup[name+'_'+ds]=undefined; // 前回変更済み→再変更を強制検出
+          } else if(sh){
+            _crShiftBackup[name+'_'+ds]={...sh};
+          }
         });
       });
       renderCal();
@@ -2903,9 +2912,11 @@ function openCrSendConfirm(){
       // 両方undefinedは変更なし、片方だけundefinedまたは時刻が違う場合は変更あり
       const curStart=cur&&cur.start!=null?cur.start:null;
       const curEnd=cur&&cur.end!=null?cur.end:null;
-      const bkStart=bk&&bk.start!=null?bk.start:null;
-      const bkEnd=bk&&bk.end!=null?bk.end:null;
-      const hasChanged=(curStart!==bkStart)||(curEnd!==bkEnd);
+      // bk===undefined は「前回変更済みの日を再変更」→常に変更ありとして扱う
+      const _bkIsForced=bk===undefined&&_crShiftBackup.hasOwnProperty(name+'_'+ds);
+      const bkStart=(!_bkIsForced&&bk&&bk.start!=null)?bk.start:(_bkIsForced?'__FORCED__':null);
+      const bkEnd=(!_bkIsForced&&bk&&bk.end!=null)?bk.end:null;
+      const hasChanged=_bkIsForced||(curStart!==bkStart)||(curEnd!==bkEnd);
       if(hasChanged){
         const d=new Date(ds);
         const isHol=curStart==null; // 現在がnull=休日にした
@@ -4577,8 +4588,8 @@ function renderInputCheckBody(){
           ${sub.checkedDates&&sub.checkedDates[ds]?`<div style="font-size:8px;color:#94a3b8;margin-top:2px;line-height:1.3">${typeof sub.checkedDates[ds]==="object"?sub.checkedDates[ds].datetime:sub.checkedDates[ds]}</div>`:''}
         </td>
         <td class="ic-bulk-cell" rowspan="2" style="padding:3px 2px!important;min-width:32px;border-right:1px solid var(--border)!important;vertical-align:middle">
-          <input type="checkbox" title="一括チェック" ${allCheckedForDay?'checked':''} ${(!sh||sh.start==null)?'disabled':''}
-            style="width:13px;height:13px;${(!sh||sh.start==null)?'cursor:default;opacity:.4;':'cursor:pointer;'}accent-color:var(--pink2);display:block;margin:0 auto"
+          <input type="checkbox" title="一括チェック" ${allCheckedForDay?'checked':''} ${((!sh||sh.start==null)&&!_isChangeRequestHoliday)?'disabled':''}
+            style="width:13px;height:13px;${((!sh||sh.start==null)&&!_isChangeRequestHoliday)?'cursor:default;opacity:.4;':'cursor:pointer;'}accent-color:var(--pink2);display:block;margin:0 auto"
             onchange="icBulkCheck('${u.name}','${dsWk}','${ds}',this.checked)">
         </td>
         ${STORES.slice(0,7).map((it,i)=>items.includes(it)?mkChkCell(it,items.indexOf(it)):`<td style="min-width:52px;background:#f0f0f0;border:1px solid #d1d5db;vertical-align:top;padding:3px 2px"><div style="font-size:8px;color:rgba(0,0,0,.2);margin-bottom:2px;white-space:nowrap;text-align:center">${shortName(it)}</div><div style="width:14px;height:14px;border:1.5px solid #c0c0c0;border-radius:3px;background:#e5e7eb;margin:0 auto"></div></td>`).join('')}<td style="min-width:48px;background:inherit"></td>
