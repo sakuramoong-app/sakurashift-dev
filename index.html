@@ -1876,8 +1876,8 @@ async function doLogin(){
     document.getElementById('topbarUser').textContent='';
     document.getElementById('staffTabs').classList.remove('hidden');
     const sb2=document.getElementById('syncBtn');if(sb2)sb2.style.display='';
-    // まずローカルデータで即表示
-    // ログイン前にGAS読み込み済みなのでそのまま表示
+    // 初期ページ表示（受信ボックス）
+    showStaffPage('inbox');
     // 通知取得＆バッジ更新→未読があればポップアップ
     fetchAndMergeNotifications('staff', '').then(()=>{
       updateNtfBadge();
