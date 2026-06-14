@@ -1239,7 +1239,6 @@ function inboxRequestActionGroup(gid, action){
   if(action==='accept'){
     // 全週を受理済みに登録＋changeRequestsのシフトを反映＋チェッククリア
     keys.forEach(key=>{
-      accepted[key+'_request']={acceptedAt:now,type:'request_accepted'};
       const m=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
       if(!m)return;
       const cn=m[1],wk=m[2];
@@ -1247,18 +1246,20 @@ function inboxRequestActionGroup(gid, action){
       if(!sub)return;
       const stores=S.castStores[cn]||[];
       const chkItems=[...new Set(['記録簿',...stores])];
+      // changeRequestsから変更日リストを保存（入力チェック表示用）
+      const changeDates=(sub.changeRequests||[]).map(ch=>ch.ds);
+      const holidayDates=(sub.changeRequests||[]).filter(ch=>ch.type==='holiday').map(ch=>ch.ds);
+      accepted[key+'_request']={acceptedAt:now,type:'request_accepted',changeDates,holidayDates};
       // changeRequestsのシフトをS.shiftsに反映
       (sub.changeRequests||[]).forEach(ch=>{
         if(ch.type==='holiday'){
-          // 休日→シフト削除
           delete S.shifts[cn+'_'+ch.ds];
         } else {
-          // 時刻変更→シフト更新
           if(!S.shifts[cn+'_'+ch.ds])S.shifts[cn+'_'+ch.ds]={};
           S.shifts[cn+'_'+ch.ds].start=ch.start;
           S.shifts[cn+'_'+ch.ds].end=ch.end;
         }
-        // 該当日のチェックをクリア
+        // 該当日のチェックをクリア（グレーアウトはしない）
         chkItems.forEach(it=>{
           const ck=cn+'_'+wk+'_'+ch.ds+'_'+it;
           if(S.checkData[ck]) delete S.checkData[ck];
@@ -4466,13 +4467,19 @@ function renderInputCheckBody(){
       const isPending=_pendingChanges[_pk]&&_pendingChanges[_pk].has(ds);
       const shiftLabel=sh&&sh.start!=null&&!isHolidayChange?fmtR(sh.start,sh.end):'';
       // 変更リクエスト受理済みの日：赤文字表示用フラグ
+      // 変更入力待ち（change_inputting）のとき変更日を赤文字表示
+      // changeRequestsは受理時に削除するので、change_inputtingかつシフト変更済みを検出
+      // 受理済みキーに変更日情報を保存しておく必要があるため、
+      // ここでは dsub.status==='change_inputting' の日付セルを赤文字にする
       const _crAccepted=getAccepted&&getAccepted();
       const _crKey=u.name+'_'+dsWk;
-      const _crAcceptedData=_crAccepted&&_crAccepted[_crKey];
-      const _isChangeRequested=dsub.status==='change_requested'&&_crAcceptedData&&_crAcceptedData.type==='request_accepted';
-      const _crChanges=(dsub.changeRequests||[]).find(c=>c.ds===ds);
-      const _isChangeRequestedDay=_isChangeRequested&&_crChanges;
-      const _isChangeRequestHoliday=_isChangeRequestedDay&&_crChanges.type==='holiday';
+      const _crAcceptedData=_crAccepted&&_crAccepted[_crKey+'_request'];
+      // change_inputting かつ accepted に変更日リストがある日
+      const _isChangeInputting=dsub.status==='change_inputting';
+      const _crChangeDates=_crAcceptedData&&_crAcceptedData.changeDates; // 受理時に保存した変更日リスト
+      const _isChangeRequestedDay=_isChangeInputting&&_crChangeDates&&_crChangeDates.includes(ds);
+      const _isChangeRequestHoliday=_isChangeRequestedDay&&_crAcceptedData.holidayDates&&_crAcceptedData.holidayDates.includes(ds);
+      const _crChangeShift=_isChangeRequestedDay&&!_isChangeRequestHoliday?S.shifts[u.name+'_'+ds]:null;
 
       // この日のチェック状態分析（月表示時はdsWkを使用）
       const dayChecks=items.map(it=>{
@@ -4531,7 +4538,8 @@ function renderInputCheckBody(){
         const storeLabel=`<div style="font-size:8px;color:#1e2a3a;font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:50px;text-align:center">${shortName(it)}</div>`;
         const isRestDay=!sh||sh.start==null;
         const isChangeUnlocked=sub&&sub.status==='change_unlocked'&&!isChangedDay;
-        const _isHolidayCell=isHolidayChange&&(dsub.status==='change_submitted'||dsub.status==='change_inputting');
+        // 旧フロー：change_submittedのみholodayCellとして扱う（change_inputtingは新フローでチェック可能）
+      const _isHolidayCell=isHolidayChange&&dsub.status==='change_submitted';
       const cellOnclick=(isRestDay||_isHolidayCell||isChangedDay&&dsub&&dsub.status==='change_unlocked')?'':`onclick="icToggleCheck('${u.name}','${dsWk}','${ds}','${it}')"`;
         return `<td class="ic-check-cell ${cd.checked?'checked':''}" id="${cellId}"
           style="padding:3px 2px!important;min-width:52px;${_hist&&_hist.length>1?'width:auto;':'width:52px;'}${_isHolidayCell?'background:#f1f5f9;':cellBg?`background:${cellBg};`:''}${_isHolidayCell?'border-left:3px solid #cbd5e1!important':borderCol};vertical-align:top;${(isRestDay||_isHolidayCell)?'pointer-events:none;':''}"
@@ -4546,7 +4554,8 @@ function renderInputCheckBody(){
 
       const isEven=dsIdx%2===1;
       const evenCls=isEven?' ic-date-even':'';
-      const noShiftCls=(!sh||sh.start==null)?' ic-row-noshift':'';
+      // change_inputtingの休日変更日はnoShiftClsを付けない（チェック可能にするため）
+      const noShiftCls=(!sh||sh.start==null)&&!(_isChangeRequestHoliday)?' ic-row-noshift':'';
       const effectiveRowClass=noShiftCls?' ':rowClass; // シフトなしは他クラスを無効化
       // ===== 上段 =====
       html+=`<tr class="${effectiveRowClass}${evenCls}${noShiftCls} ic-row-upper ic-date-top" data-rest="${noShiftCls?'1':'0'}" data-cast="${u.name}" data-date="${ds}">
@@ -4556,9 +4565,9 @@ function renderInputCheckBody(){
         <td class="ic-date-cell ${dateCls}" rowspan="2" style="position:sticky;left:72px;z-index:1;vertical-align:middle;text-align:center;min-width:88px;width:88px;border-right:2px solid var(--border)!important;padding:4px 3px!important">
           <div style="font-size:10px;font-weight:600;color:#1e2a3a">${d.getMonth()+1}/${d.getDate()}<span style="color:${(isSun||isHol)?'#dc2626':isSat?'#2563eb':'#1e2a3a'}">(${DOWNAMES[dow]}${isHol?'祝':''})</span></div>
           ${_isChangeRequestHoliday
-            ?`<div style="font-size:11px;font-weight:700;color:#dc2626;margin-top:3px;background:#fef2f2;border-radius:4px;padding:2px 5px;display:inline-block;border:1px solid #fca5a5">🚫 休日</div>`
-            :_isChangeRequestedDay
-              ?`<div style="font-size:12px;font-weight:700;color:#dc2626;margin-top:3px;background:#fef2f2;border-radius:4px;padding:2px 5px;display:inline-block;border:1px solid #fca5a5">⌚ ${fmtR(_crChanges.start,_crChanges.end)}<span style="font-size:9px;margin-left:3px">変更待</span></div>`
+            ?`<div style="font-size:11px;font-weight:700;color:#dc2626;margin-top:3px;background:#fef2f2;border-radius:4px;padding:2px 5px;display:inline-block;border:1px solid #fca5a5">🚫 休日変更</div>`
+            :_isChangeRequestedDay&&_crChangeShift
+              ?`<div style="font-size:12px;font-weight:700;color:#dc2626;margin-top:3px;background:#fef2f2;border-radius:4px;padding:2px 5px;display:inline-block;border:1px solid #fca5a5">⌚ ${fmtR(_crChangeShift.start,_crChangeShift.end)}</div>`
             :isHolidayChange
               ?`<div style="font-size:11px;font-weight:700;color:#9d174d;margin-top:3px;background:#fce7f3;border-radius:4px;padding:2px 5px;display:inline-block">🚫 休日変更中</div>`
               :shiftLabel
