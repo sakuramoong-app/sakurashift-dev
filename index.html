@@ -659,6 +659,13 @@ async function loadFromGAS(){
           S=migratedGas;
           S.operationLog=localData.operationLog||[];
           if(!S.checkData)S.checkData={};
+          // キャスト用GASレスポンスはPWなし→localのcastListのPWを復元
+          if(localData.castList&&S.castList){
+            S.castList=S.castList.map(u=>{
+              const local=localData.castList.find(x=>x.name===u.name);
+              return local&&local.pw!=null?{...u,pw:local.pw}:u;
+            });
+          }
           // localのsubmissionsのうち自分以外の週のデータは不要だが
           // 自分のsubmissionsはGASデータで上書き（内勤が確定した最新状態を反映）
           // ただしlocalにあって自分のキャスト名のsubがGASに存在しない場合はlocalを保護
@@ -684,6 +691,13 @@ async function loadFromGAS(){
           if(!S.checkData)S.checkData={};
           if(!S.staffList&&localData&&localData.staffList)S.staffList=localData.staffList;
           if(!S.staffList)S.staffList=[];
+          // GASのcastListにPWがない場合はlocalのPWを復元
+          if(localData&&localData.castList&&S.castList){
+            S.castList=S.castList.map(u=>{
+              const local=localData.castList.find(x=>x.name===u.name);
+              return local&&local.pw!=null?{...u,pw:local.pw}:u;
+            });
+          }
         }
         console.log('[loadFromGAS] GAS使用 shifts:'+gasShifts);
       }
@@ -1696,10 +1710,14 @@ async function doLogin(){
   const pw=document.getElementById('loginPw').value;
   const err=document.getElementById('loginError');
   if(!pw){err.textContent='パスワードを入力してください';return;}
-  // ログイン前にGASから最新データを取得
+  // ログイン前にGASから最新データを取得（PWを含むstaffロールで取得）
   err.textContent='';
   showSyncOverlay('ログイン中...');
+  // ログイン時は常にstaffロールでロード（castListのPWを取得するため）
+  const _prevType=currentType;
+  currentType='staff';
   const gasOk=await loadFromGAS();
+  currentType=_prevType;
   hideSyncOverlay();
   err.textContent='';
   if(!gasOk){
