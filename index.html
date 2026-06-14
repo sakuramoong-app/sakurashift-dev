@@ -107,7 +107,7 @@ body{font-family:'Hiragino Kaku Gothic ProN','Meiryo',sans-serif;background:var(
 .cal-date{font-size:10px;font-weight:700;color:var(--text2);margin-bottom:1px}
 .cal-cell.sunday .cal-date{color:#dc2626}.cal-cell.saturday .cal-date{color:#2563eb}.cal-cell.holiday .cal-date{color:#dc2626}
 .cal-shift-tag{border-radius:3px;padding:1px 3px;font-size:9px;line-height:1.5;margin-bottom:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600;max-width:100%;display:block}
-.cal-shift-tag.input{background:var(--navy);color:#fff}.cal-shift-tag.confirmed{background:#d1fae5;color:#065f46;border:1px solid #a7f3d0}.cal-shift-tag.pending{background:#fef3c7;color:#92400e}
+.cal-shift-tag.input{background:var(--navy);color:#fff}.cal-shift-tag.confirmed{background:#d1fae5;color:#065f46;border:1px solid #a7f3d0}.cal-shift-tag.pending{background:#fef3c7;color:#92400e}.cal-shift-tag.change-req{background:#ffe4e6;color:#be123c;border:1.5px solid #fda4af}
 .cal-memo{font-size:8px;color:var(--text3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;display:block}
 .cal-alert{position:absolute;top:2px;right:2px;font-size:8px;background:var(--danger);color:#fff;border-radius:3px;padding:1px 3px;font-weight:700}
 .cal-lock-icon{position:absolute;top:2px;right:2px;font-size:10px;color:var(--text3)}
@@ -1103,7 +1103,7 @@ function collectInboxItems(){
 }
 
 // 受理処理（シフト提出・変更提出）
-function inboxAccept(key){
+function inboxAccept(key, silent=false){
   const accepted=getAccepted();
   accepted[key]={acceptedAt:new Date().toLocaleString('ja-JP'), type:'accepted'};
   setAccepted(accepted);
@@ -1126,7 +1126,22 @@ function inboxAccept(key){
     }
   }
   updateNtfBadge();
-  renderInbox();
+  if(!silent) renderInbox();
+}
+
+// 一括受理（waiting/change_submitted のみ）
+function inboxAcceptAll(){
+  const items=collectInboxItems();
+  const accepted=getAccepted();
+  const targets=items.filter(it=>!accepted[it.key]&&['waiting','change_submitted'].includes(it.sub.status));
+  if(!targets.length){openInfoModal('一括受理できる件数がありません');return;}
+  openConfirmModal(`シフト提出・変更提出 ${targets.length}件を一括受理します。
+キャスト全員に受理通知が送信されます。よろしいですか？`,
+    ()=>{
+      targets.forEach(it=>inboxAccept(it.key,true));
+      openInfoModal(`✅ ${targets.length}件を受理しました`);
+    }
+  );
 }
 
 // 変更リクエストの受理/保留/キャンセル
@@ -1195,10 +1210,16 @@ function renderInbox(){
   // → acceptedの全キーを検索して受理済みボックスに表示
   const allAcceptedKeys=Object.keys(accepted);
 
+  // 一括受理対象（waiting/change_submitted のみ）
+  const bulkTargets=pending.filter(it=>['waiting','change_submitted'].includes(it.sub.status));
+
   let html=`<div class="card" style="margin-bottom:12px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
       <div class="card-title" style="margin:0"><span class="ct-icon ct-pink">📬</span>受信ボックス</div>
-      <button class="btn btn-outline btn-sm" onclick="syncAndReload()">🔄 最新取得</button>
+      <div style="display:flex;gap:6px">
+        ${bulkTargets.length>0?`<button class="btn btn-primary btn-sm" onclick="inboxAcceptAll()">✅ 一括受理（${bulkTargets.length}件）</button>`:''}
+        <button class="btn btn-outline btn-sm" onclick="syncAndReload()">🔄 最新取得</button>
+      </div>
     </div>`;
 
   if(!pending.length){
@@ -1481,9 +1502,11 @@ const _restCollapsed={};
 let _isSaving=false;
 let _saveQueue=Promise.resolve(true);
 let _resetCastNames=new Set();
-// 変更リクエスト選択（キャスト側）
-// { ds: { type:'time'|'holiday', start:number|null, end:number|null } }
-let _changeRequestSelection={}; // リセット直後のキャストはGASマージで復活させない
+// 変更リクエスト（キャスト側）
+// 一時解除中の週 Set（週ごとに解除管理）
+let _crTempUnlockWks=new Set();
+// 解除前のシフトバックアップ { 'castName_ds': {start,end,memo} }
+let _crShiftBackup={}; // リセット直後のキャストはGASマージで復活させない
 let _castGasSaved=new Set(); // GAS保存成功済みのsubmissionキー（これのみlocalを信頼）
 
 // 重要操作前に保存完了を待つ（軽い保存が進行中ならくるくる表示して待機）
@@ -2077,6 +2100,30 @@ function renderCal(){
         <button class="btn btn-primary btn-sm" onclick="submitShifts()">📤 提出</button>
       </div>
     </div>
+    ${(()=>{
+      // 変更リクエスト用一時解除ボタン（提出済みの週がある場合に表示）
+      const name2=currentUser.name;
+      const lockedWks=Object.entries(S.submissions||{})
+        .filter(([k,s])=>k.startsWith(name2+'_')&&['waiting','inputting','confirmed','change_confirmed','change_inputting','change_requested'].includes(s&&s.status))
+        .map(([k])=>k.slice(name2.length+1));
+      if(!lockedWks.length)return '';
+      const hasUnlocked=_crTempUnlockWks.size>0;
+      return `<div style="background:${hasUnlocked?'#fef2f8':'#f8fafc'};border:2px solid ${hasUnlocked?'var(--pink)':'var(--border)'};border-radius:10px;padding:10px 12px;margin-bottom:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-size:13px;font-weight:700;color:${hasUnlocked?'var(--pink)':'var(--text)'}">${hasUnlocked?'🔓 変更リクエスト入力中（一時解除）':'🔄 変更リクエスト'}</div>
+            ${hasUnlocked?`<div style="font-size:10px;color:#dc2626;margin-top:2px">⚠️ 仮解除中です。変更後「変更リクエストを送信」してください</div>`:''}
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${hasUnlocked
+              ?`<button class="btn btn-warning btn-sm" onclick="openCrSendConfirm()">📤 変更リクエストを送信</button>
+                <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#dc2626" onclick="crCancelTempUnlock()">🔒 解除をキャンセル</button>`
+              :`<button class="btn btn-outline btn-sm" style="color:var(--pink);border-color:var(--pink)" onclick="crStartTempUnlock()">🔓 変更リクエスト（一時解除）</button>`
+            }
+          </div>
+        </div>
+      </div>`;
+    })()}
     <div class="cal-grid">
       <div class="cal-dow">月</div><div class="cal-dow">火</div><div class="cal-dow">水</div><div class="cal-dow">木</div><div class="cal-dow">金</div>
       <div class="cal-dow" style="color:#2563eb">土</div><div class="cal-dow" style="color:#dc2626">日</div>`;
@@ -2104,14 +2151,24 @@ function renderCal(){
         const st=subTmp.status;
         if(st==='inputting'||st==='change_inputting')tc+='inputting';
         else if(st==='waiting'||st==='change_submitted')tc+='pending';
+        else if(st==='change_requested'){tc+='change-req';}
         else if(st==='change_unlocked'){
-          // changedDatesに含まれる日だけunlocked色、それ以外はconfirmed色
           const inCD=subTmp.changedDates&&subTmp.changedDates.includes(ds);
           tc+=inCD?'unlocked':'confirmed';
         }
         else tc+='pending';
       } else {tc+='input';}
-      inner+=`<div class="${tc}">${fmtR(sh.start,sh.end)}</div>`;
+      // change_requested の場合：変更リクエスト内容またはリクエスト中表示
+      if(subTmp&&subTmp.status==='change_requested'){
+        const _cr=(subTmp.changeRequests||[]).find(c=>c.ds===ds);
+        if(_cr){
+          inner+=`<div class="${tc}">${_cr.type==='holiday'?'🚫 休日':'⌚ '+fmtR(_cr.start,_cr.end)}<div style="font-size:8px;color:#dc2626;font-weight:700">リクエスト中</div></div>`;
+        } else {
+          inner+=`<div class="${tc}">${fmtR(sh.start,sh.end)}</div>`;
+        }
+      } else {
+        inner+=`<div class="${tc}">${fmtR(sh.start,sh.end)}</div>`;
+      }
       if(sh.memo)inner+=`<div class="cal-memo">📝${sh.memo.length>15?sh.memo.slice(0,15)+'…':sh.memo}</div>`;
     }
     if(conf){inner+=`<span class="cal-lock-icon">🔒</span>`;}
@@ -2120,10 +2177,12 @@ function renderCal(){
       const chked=calChecked.has(ds);
       inner+=`<input type="checkbox" class="cal-check" ${chked?'checked':''} onclick="event.stopPropagation();toggleCalCheck('${ds}')" style="position:absolute;bottom:2px;right:2px;width:12px;height:12px;accent-color:var(--pink2);cursor:pointer">`;
     }
-    // change_unlocked でも changedDates 外の日はロック扱いに
+    // ロック判定：_crTempUnlockWks に含まれる週は仮解除
     const wkTmp2=getWeekKey(ds);
     const subTmp2=S.submissions[name+'_'+wkTmp2];
-    const isLockedByConf=conf||(subTmp2&&subTmp2.status==='change_unlocked'&&subTmp2.changedDates&&subTmp2.changedDates.length>0&&!subTmp2.changedDates.includes(ds));
+    const _isTempUnlocked=_crTempUnlockWks.has(wkTmp2);
+    // 通常ロック：提出済みかつ仮解除されていない
+    const isLockedByConf=!_isTempUnlocked&&(conf||(subTmp2&&['waiting','inputting','confirmed','change_confirmed','change_inputting','change_submitted','change_requested'].includes(subTmp2&&subTmp2.status)));
     // 事前申告休暇日はグレーアウト・タップ不可
     const _isAbsDay=isAbsenceDate(name,ds);
     const cellClick=isClosed||_isAbsDay?'':(isLockedByConf?`onclick="openLockedModal('${ds}')"`:` onclick="openShiftModal('${ds}')"`);
@@ -2486,6 +2545,111 @@ function saveCalImage(){
 }
 
 
+// ===== 変更リクエスト（一時解除フロー）=====
+
+// 一時解除開始
+function crStartTempUnlock(){
+  const name=currentUser.name;
+  openConfirmModal(
+    '変更リクエスト用に一時的にロックを解除します。\n\n⚠️ これは仮解除です。変更後に「変更リクエストを送信」を押してください。\n内勤の確認後に正式に反映されます。',
+    ()=>{
+      // ロック中の全週を解除
+      Object.entries(S.submissions||{}).forEach(([k,sub])=>{
+        if(!k.startsWith(name+'_'))return;
+        if(!['waiting','inputting','confirmed','change_confirmed','change_inputting','change_submitted','change_requested'].includes(sub&&sub.status))return;
+        const wk=k.slice(name.length+1);
+        _crTempUnlockWks.add(wk);
+        // 解除前のシフトをバックアップ
+        getWeekDates(wk).forEach(ds=>{
+          const sh=S.shifts[name+'_'+ds];
+          if(sh){_crShiftBackup[name+'_'+ds]={...sh};}
+        });
+      });
+      renderCal();
+    }
+  );
+}
+
+// 一時解除キャンセル（元に戻す）
+function crCancelTempUnlock(){
+  const name=currentUser.name;
+  openConfirmModal(
+    '変更リクエストを取り消します。シフトは元に戻ります。',
+    ()=>{
+      // シフトをバックアップから復元
+      Object.entries(_crShiftBackup).forEach(([k,sh])=>{
+        if(k.startsWith(name+'_')) S.shifts[k]=sh;
+      });
+      _crTempUnlockWks.clear();
+      _crShiftBackup={};
+      try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+      renderCal();
+      openInfoModal('変更リクエストをキャンセルしました。シフトが元に戻りました。');
+    }
+  );
+}
+
+// 変更リクエスト送信確認を開く
+function openCrSendConfirm(){
+  if(!_crTempUnlockWks.size){openInfoModal('解除中の週がありません');return;}
+  const name=currentUser.name;
+  // 変更された日を収集
+  const changes=[];
+  _crTempUnlockWks.forEach(wk=>{
+    getWeekDates(wk).forEach(ds=>{
+      const cur=S.shifts[name+'_'+ds];
+      const bk=_crShiftBackup[name+'_'+ds];
+      // 変更あり（時刻変更 or 新規入力 or 削除）
+      if(JSON.stringify(cur)!==JSON.stringify(bk)){
+        const d=new Date(ds);
+        const isHol=!cur||cur.start==null;
+        const lbl=`${d.getMonth()+1}/${d.getDate()}：${isHol?'🚫 休日変更':fmtR(cur.start,cur.end)+' に変更'}`;
+        changes.push({ds,wk,type:isHol?'holiday':'time',start:cur&&cur.start!=null?cur.start:null,end:cur&&cur.end!=null?cur.end:null,label:lbl});
+      }
+    });
+  });
+  if(!changes.length){
+    openInfoModal('変更がありません。シフトを変更してから送信してください。');return;
+  }
+  const detail=changes.map(c=>c.label).join('\n');
+  openConfirmModal(
+    '変更リクエストを送信します。\n\n'+detail+'\n\n内勤に通知が届きます。よろしいですか？',
+    ()=>sendChangeRequestNew(changes)
+  );
+}
+
+// 変更リクエスト送信（新フロー）
+function sendChangeRequestNew(changes){
+  const name=currentUser.name;
+  const now=new Date().toLocaleString('ja-JP');
+  // 週ごとにグループ化
+  const wkMap={};
+  changes.forEach(c=>{
+    if(!wkMap[c.wk])wkMap[c.wk]=[];
+    wkMap[c.wk].push(c);
+  });
+  // submissions を change_requested に変更
+  Object.entries(wkMap).forEach(([wk,chgs])=>{
+    const k=name+'_'+wk;
+    if(!S.submissions[k])return;
+    S.submissions[k].status='change_requested';
+    S.submissions[k].changeRequestedAt=now;
+    S.submissions[k].changeRequests=chgs.map(c=>({ds:c.ds,type:c.type,start:c.start,end:c.end}));
+    // ロック復元
+    _crTempUnlockWks.delete(wk);
+    gasConfirmSave(name,wk,S.submissions[k]).catch(e=>console.warn(e));
+  });
+  // 内勤に通知
+  const wkLabels=Object.keys(wkMap).map(wk=>getWeekLabel(wk)).join('、');
+  notifyStaff('change_request',`${name} さんから変更リクエストが届きました（${wkLabels}）`);
+  addLog('change_request',name,Object.keys(wkMap).join('/'),`${changes.length}日分`);
+  try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+  _crTempUnlockWks.clear();
+  _crShiftBackup={};
+  closeModal();
+  openInfoModal('リクエストが送信されました。内勤の確認をお待ちください。\nお急ぎの場合や複雑な場合はLINEにてご相談ください。',()=>renderCal());
+}
+
 function openLockedModal(ds){
   const name=currentUser.name;
   const sh=S.shifts[name+'_'+ds]||{};
@@ -2494,31 +2658,13 @@ function openLockedModal(ds){
   const isHol=HOLIDAYS.includes(ds);
   const wk=getWeekKey(ds);
   const sub=S.submissions[name+'_'+wk];
-
-  let displayStatus=sub?sub.status:'';
-  if(sub&&sub.status==='change_unlocked'){
-    if(!sub.changedDates||!sub.changedDates.includes(ds)) displayStatus='confirmed';
-  }
-  const statusLabel=displayStatus?STATUS_LABEL[displayStatus]||displayStatus:'';
-  const badgeClass=displayStatus?STATUS_BADGE[displayStatus]||'badge-gray':'';
-
-  // 選択中かどうか
-  const isSelected=!!_changeRequestSelection[ds];
-  const selData=_changeRequestSelection[ds]||{};
-
-  // 変更リクエスト可能か（waiting/confirmed/change_confirmed などロック中）
-  const canRequest=sub&&['waiting','inputting','confirmed','change_confirmed','change_inputting','change_submitted'].includes(sub.status);
-
-  // 時刻オプション
-  const bizOpts=getBizOptions(ds);
-  const sOpts=bizOpts.sOpts.map(t=>`<option value="${t.value}"${(selData.start||sh.start)===t.value?' selected':''}>${t.label}</option>`).join('');
-  const eOpts=bizOpts.eOpts.map(t=>`<option value="${t.value}"${(selData.end||sh.end)===t.value?' selected':''}>${t.label}</option>`).join('');
-
-  const selCount=Object.keys(_changeRequestSelection).length;
+  const statusLabel=sub?STATUS_LABEL[sub.status]||sub.status:'';
+  const badgeClass=sub?STATUS_BADGE[sub.status]||'badge-gray':'';
+  const crData=sub&&sub.changeRequests?sub.changeRequests.find(c=>c.ds===ds):null;
 
   openModal(`<button class="modal-close" onclick="closeModal()">×</button>
     <div class="modal-title">📅 ${d.getMonth()+1}/${d.getDate()}(${dow}${isHol?'祝':''})</div>
-    <div style="background:#f8fafc;border-radius:8px;padding:10px 12px;margin-bottom:12px">
+    <div style="background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:12px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
         <span style="font-size:12px;color:#94a3b8">🔒 ロック中</span>
         ${sub?`<span class="badge ${badgeClass}">${statusLabel}</span>`:''}
@@ -2527,125 +2673,17 @@ function openLockedModal(ds){
         ?`<div style="font-size:18px;font-weight:800;color:var(--navy);margin-bottom:4px">⌚ ${fmtR(sh.start,sh.end)}</div>`
         :`<div style="font-size:13px;color:#94a3b8;margin-bottom:4px">シフト未入力</div>`
       }
+      ${crData?`<div style="margin-top:6px;padding:6px 8px;background:#ffe4e6;border-radius:6px;font-size:12px;color:#be123c;font-weight:700">
+        📝 リクエスト中：${crData.type==='holiday'?'🚫 休日変更':fmtR(crData.start,crData.end)+' に変更'}
+      </div>`:''}
     </div>
-    ${canRequest?`
-    <div style="background:${isSelected?'#fef2f8':'#f8fafc'};border:2px solid ${isSelected?'var(--pink)':'var(--border)'};border-radius:10px;padding:12px;margin-bottom:12px">
-      <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px">📝 この日を変更リクエストに追加</div>
-      ${isSelected&&selData.type==='holiday'?`
-        <div style="color:#dc2626;font-size:13px;font-weight:700;margin-bottom:8px">🚫 休日変更</div>
-        <button class="btn btn-outline btn-sm" onclick="crSetTime('${ds}')">時刻変更に切り替え</button>
-      `:`
-        <div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-          <div><label class="form-label" style="font-size:10px">変更後 出勤</label><select class="form-select" id="crS_${ds}" style="font-size:12px;padding:4px">${sOpts}</select></div>
-          <div><label class="form-label" style="font-size:10px">変更後 退勤</label><select class="form-select" id="crE_${ds}" style="font-size:12px;padding:4px">${eOpts}</select></div>
-        </div>
-        <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#dc2626" onclick="crSetHoliday('${ds}')">🚫 休日変更にする</button>
-      `}
-      <div style="margin-top:10px;display:flex;gap:8px">
-        ${isSelected
-          ?`<button class="btn btn-primary btn-sm" onclick="crConfirmAdd('${ds}')">✅ 更新</button>
-            <button class="btn btn-outline btn-sm" onclick="crRemove('${ds}')">取り消し</button>`
-          :`<button class="btn btn-primary btn-sm" onclick="crConfirmAdd('${ds}')">＋ 追加</button>`
-        }
-      </div>
+    <div style="font-size:11px;color:#94a3b8;text-align:center;margin-bottom:8px">
+      変更リクエストはカレンダー上部の「🔓 変更リクエスト（一時解除）」から行えます
     </div>
-    ${selCount>0?`<div style="background:#fdf2f8;border:1px solid var(--pink4);border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:12px">
-      <span style="font-weight:700;color:var(--pink)">📋 選択中 ${selCount}日</span>
-      ${Object.entries(_changeRequestSelection).map(([_ds,_d])=>{
-        const _dt=new Date(_ds);
-        return `<div style="color:var(--text2)">${_dt.getMonth()+1}/${_dt.getDate()}：${_d.type==='holiday'?'🚫 休日':fmtR(_d.start,_d.end)}</div>`;
-      }).join('')}
-    </div>`:''}
-    <div class="modal-actions">
-      ${selCount>0?`<button class="btn btn-warning" onclick="openChangeRequestConfirm()">📤 変更リクエストを送信（${selCount}日）</button>`:''}
-      <button class="btn btn-outline" onclick="closeModal()">閉じる</button>
-    </div>`:`
-    <div style="font-size:11px;color:#94a3b8;text-align:center;margin-bottom:8px">お急ぎの場合はLINEにてご相談ください</div>
-    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">閉じる</button></div>`}
+    <div class="modal-actions"><button class="btn btn-outline" onclick="closeModal()">閉じる</button></div>
   `);
 }
 
-// 変更リクエスト：時刻設定で追加
-function crConfirmAdd(ds){
-  const sEl=document.getElementById('crS_'+ds);
-  const eEl=document.getElementById('crE_'+ds);
-  const sel=_changeRequestSelection[ds];
-  if(sel&&sel.type==='holiday'){
-    // 既に休日選択済みはそのまま更新
-    _changeRequestSelection[ds]={type:'holiday',start:null,end:null};
-  } else if(sEl&&eEl){
-    const s=parseInt(sEl.value),e=parseInt(eEl.value);
-    if(e<=s){openInfoModal('退勤は出勤より後にしてください');return;}
-    _changeRequestSelection[ds]={type:'time',start:s,end:e};
-  } else {
-    _changeRequestSelection[ds]={type:'time',start:null,end:null};
-  }
-  openLockedModal(ds);
-}
-
-// 変更リクエスト：休日設定
-function crSetHoliday(ds){
-  _changeRequestSelection[ds]={type:'holiday',start:null,end:null};
-  openLockedModal(ds);
-}
-
-// 変更リクエスト：時刻変更に戻す
-function crSetTime(ds){
-  const sh=S.shifts[currentUser.name+'_'+ds]||{};
-  _changeRequestSelection[ds]={type:'time',start:sh.start||null,end:sh.end||null};
-  openLockedModal(ds);
-}
-
-// 変更リクエスト：選択取り消し
-function crRemove(ds){
-  delete _changeRequestSelection[ds];
-  openLockedModal(ds);
-}
-
-// 変更リクエスト送信確認モーダル
-function openChangeRequestConfirm(){
-  const selCount=Object.keys(_changeRequestSelection).length;
-  const detail=Object.entries(_changeRequestSelection).map(([ds,d])=>{
-    const dt=new Date(ds);
-    return `${dt.getMonth()+1}/${dt.getDate()}：${d.type==='holiday'?'🚫 休日':fmtR(d.start,d.end)}`;
-  }).join('\n');
-  openConfirmModal(
-    '変更リクエストを送信します\n\n'+detail+'\n\n送信しますか？',
-    ()=>sendChangeRequest(),
-    ()=>openInfoModal('リクエストがキャンセルされました')
-  );
-}
-
-// 変更リクエスト送信
-function sendChangeRequest(){
-  const name=currentUser.name;
-  const now=new Date().toLocaleString('ja-JP');
-  // 選択された日ごとに週に分けてsubmissionsを更新
-  const wkMap={};
-  Object.entries(_changeRequestSelection).forEach(([ds,d])=>{
-    const wk=getWeekKey(ds);
-    if(!wkMap[wk])wkMap[wk]=[];
-    wkMap[wk].push({ds,...d});
-  });
-  Object.entries(wkMap).forEach(([wk,changes])=>{
-    const k=name+'_'+wk;
-    if(!S.submissions[k])return;
-    S.submissions[k].status='change_requested';
-    S.submissions[k].changeRequestedAt=now;
-    S.submissions[k].changeRequests=changes; // [{ds,type,start,end}]
-    // GASに保存
-    gasConfirmSave(name,wk,S.submissions[k]).catch(e=>console.warn(e));
-  });
-  // 内勤に通知
-  const wkLabels=Object.keys(wkMap).map(wk=>getWeekLabel(wk)).join('、');
-  notifyStaff('change_request',`${name} さんから変更リクエストが届きました（${wkLabels}）`);
-  addLog('change_request',name,Object.keys(wkMap).join('/'),`${Object.keys(_changeRequestSelection).length}日`);
-  try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
-  // 選択クリア
-  _changeRequestSelection={};
-  closeModal();
-  openInfoModal('リクエストが送信されました。内勤の確認をお待ちください。\nお急ぎの場合や複雑な場合はLINEにてご相談ください。',()=>renderCal());
-}
 function openShiftModal(ds){
   const name=currentUser.name,sh=S.shifts[name+'_'+ds]||{},d=new Date(ds);
   const dow=DOWNAMES[(d.getDay()+6)%7],isHol=HOLIDAYS.includes(ds),alts=getAlerts(ds);
@@ -3399,13 +3437,22 @@ function renderCastSearch(){
     document.body.appendChild(bar);
   }
 
-  // 固定ヘッダー（icFixedHeader）に検索窓・入力者を表示
+  // 固定ヘッダーにタイトル・タブ・検索窓をセットで表示
   const _fhCS=document.getElementById('icFixedHeader');
   if(_fhCS){
     _fhCS.style.display='block';
-    _fhCS.innerHTML=searchHtml;
+    _fhCS.style.padding='8px 12px 0';
+    _fhCS.innerHTML=`
+      <div style="font-size:14px;font-weight:800;color:var(--navy);margin-bottom:6px">🔍 キャスト検索</div>
+      ${tabHtml}
+      ${searchHtml}
+      <div style="border-bottom:2px solid var(--border);margin:0 -12px"></div>
+    `;
     const _inp=_fhCS.querySelector('#csQueryInput');
-    if(_inp) _inp.addEventListener('input',()=>{csQuery=_inp.value;renderCastSearch();});
+    if(_inp){
+      if(csQuery) _inp.value=csQuery;
+      _inp.addEventListener('input',()=>{csQuery=_inp.value;renderCastSearch();});
+    }
     const _sel=_fhCS.querySelector('#csStaffSel');
     if(_sel){
       if(currentStaffName) _sel.value=currentStaffName;
@@ -3413,9 +3460,8 @@ function renderCastSearch(){
     }
   }
 
+  // mainContentには本文のみ（ヘッダー部分は固定ヘッダーに入れる）
   document.getElementById('mainContent').innerHTML=`<div class="card" style="padding-left:32px;padding-top:4px">
-    <div class="card-title" style="margin-bottom:8px"><span class="ct-icon ct-pink">🔍</span>キャスト検索</div>
-    ${tabHtml}
     ${mainHtml}
   </div>`;
 }
@@ -4876,23 +4922,30 @@ function renderHourly(){
     unsub.forEach((u,i)=>{
       const rKey=u.name+'_'+_dashNextWk;
       const reminded=S.remindedCasts&&S.remindedCasts[rKey];
-      dashHtml+=`<div class="cast-row" style="padding:7px 0;border-bottom:1px solid var(--border);opacity:${reminded?0.6:1}">
-        <div style="display:flex;align-items:center;gap:7px;flex:1">
-          <div class="cast-avatar ${AVC[i%5]}" style="width:26px;height:26px;font-size:11px">${u.name[0]}</div>
-          <div>
+      const _unsubMemoKey=u.name+'_'+_dashNextWk;
+      const _unsubMemoVal=S.unsubMemo&&S.unsubMemo[_unsubMemoKey]||'';
+      dashHtml+=`<div style="padding:7px 0;border-bottom:1px solid var(--border);opacity:${reminded?0.6:1}">
+        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap">
+          <div class="cast-avatar ${AVC[i%5]}" style="width:26px;height:26px;font-size:11px;flex-shrink:0">${u.name[0]}</div>
+          <div style="flex:1;min-width:120px">
             <div style="font-weight:700">${u.name}</div>
             ${reminded?'<div style="font-size:10px;color:#059669;font-weight:600">✅ 催促済み</div>':''}
             ${(()=>{const _absH=getCastAbsences(u.name).filter(a=>getWeekDates(_dashNextWk).some(ds=>a.from<=ds&&ds<=a.to));return _absH.length?_absH.map(a=>`<div style="font-size:10px;color:#1d4ed8;font-weight:600">📅 ${a.from}〜${a.to}：${escHtml(a.reason||'')}</div>`).join(''):'';})()}
           </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            ${(()=>{const _absH2=getCastAbsences(u.name).filter(a=>getWeekDates(_dashNextWk).some(ds=>a.from<=ds&&ds<=a.to));return _absH2.length?'<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:11px">📅 休暇中</span>':'<span class="badge badge-danger">未提出</span>';})()}
+            <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:var(--text2);white-space:nowrap">
+              <input type="checkbox" ${reminded?'checked':''}
+                style="width:14px;height:14px;accent-color:var(--success);cursor:pointer"
+                onchange="toggleReminded('${u.name}','${_dashNextWk}',this.checked)">
+              催促済み
+            </label>
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px">
-          ${(()=>{const _absH2=getCastAbsences(u.name).filter(a=>getWeekDates(_dashNextWk).some(ds=>a.from<=ds&&ds<=a.to));return _absH2.length?'<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:11px">📅 休暇中</span>':'<span class="badge badge-danger">未提出</span>';})()}
-          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;color:var(--text2);white-space:nowrap">
-            <input type="checkbox" ${reminded?'checked':''}
-              style="width:14px;height:14px;accent-color:var(--success);cursor:pointer"
-              onchange="toggleReminded('${u.name}','${_dashNextWk}',this.checked)">
-            催促済み
-          </label>
+        <div style="margin-top:5px;padding-left:33px">
+          <input type="text" class="form-input" placeholder="備考（自由入力）" value="${escHtml(_unsubMemoVal)}"
+            style="width:100%;font-size:12px;padding:5px 8px"
+            oninput="(function(el,key){if(!S.unsubMemo)S.unsubMemo={};S.unsubMemo[key]=el.value;saveState(false);})(this,'${_unsubMemoKey}')">
         </div>
       </div>`;
     });
