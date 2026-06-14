@@ -5825,13 +5825,38 @@ function resetCastAll(){
   });
 }
 
+// GASに直接上書き保存（マージなし・リセット用）
+function _saveToGasDirectly(successMsg){
+  (S.castList||[]).forEach(u=>_resetCastNames.add(u.name));
+  try{localStorage.removeItem(NTF_KEY_STAFF);}catch(e){}
+  try{localStorage.removeItem(INBOX_ACCEPTED_KEY);}catch(e){}
+  try{(S.castList||[]).forEach(u=>localStorage.removeItem(getCastNtfKey(u.name)));}catch(e){}
+  try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+  if(!GAS_URL){openInfoModal(successMsg+'（GAS未接続）',renderSettings);return;}
+  const gasData=Object.assign({},S);
+  delete gasData.noticeImage;
+  delete gasData.personalNoticeImages;
+  delete gasData.operationLog;
+  const body=new FormData();
+  body.append('action','save');
+  body.append('token','sakura2025shift');
+  body.append('data',JSON.stringify(gasData));
+  showSyncOverlay('クリア中...');
+  fetch(GAS_URL,{method:'POST',body})
+    .then(r=>r.json())
+    .then(()=>{
+      hideSyncOverlay();
+      try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+      openInfoModal(successMsg,renderSettings);
+    })
+    .catch(()=>{hideSyncOverlay();openInfoModal(successMsg+'（GAS通信失敗）',renderSettings);});
+}
 function resetSubmissions(){
   openConfirmModal('提出履歴・チェックデータをすべてクリアしますか？\nシフト入力・キャスト設定は残ります。',()=>{
     S.submissions={};
     S.checkData={};
     S.checkNotes={};
-    saveState(false);
-    openInfoModal('✅ 提出履歴・チェックデータをクリアしました',renderSettings);
+    _saveToGasDirectly('✅ 提出履歴・チェックデータをクリアしました（GASにも反映）');
   });
 }
 function resetShifts(){
@@ -5840,8 +5865,7 @@ function resetShifts(){
     S.submissions={};
     S.checkData={};
     S.checkNotes={};
-    saveState(false);
-    openInfoModal('✅ シフト・提出履歴・チェックデータをクリアしました',renderSettings);
+    _saveToGasDirectly('✅ シフト・提出履歴・チェックデータをクリアしました（GASにも反映）');
   });
 }
 function resetAll(){
@@ -5850,36 +5874,7 @@ function resetAll(){
     S.checkData={};
     S.checkNotes={};
     S.shifts={};
-    // 全キャストをリセット対象としてマーク（マージで復活しないよう）
-    (S.castList||[]).forEach(u=>_resetCastNames.add(u.name));
-    // 通知・受理済みもクリア
-    try{localStorage.removeItem(NTF_KEY_STAFF);}catch(e){}
-    try{localStorage.removeItem(INBOX_ACCEPTED_KEY);}catch(e){}
-    try{
-      // キャスト全員の通知もクリア
-      (S.castList||[]).forEach(u=>{
-        localStorage.removeItem(getCastNtfKey(u.name));
-      });
-    }catch(e){}
-    try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
-    // GASにも直接クリア済みデータを上書き送信
-    if(GAS_URL){
-      const gasData={...S};
-      delete gasData.noticeImage;
-      delete gasData.personalNoticeImages;
-      delete gasData.operationLog;
-      const body=new FormData();
-      body.append('action','save');
-      body.append('token','sakura2025shift');
-      body.append('data',JSON.stringify(gasData));
-      showSyncOverlay('クリア中...');
-      fetch(GAS_URL,{method:'POST',body})
-        .then(r=>r.json())
-        .then(()=>{hideSyncOverlay();openInfoModal('✅ データをすべてクリアしました（GASにも反映）',renderSettings);})
-        .catch(()=>{hideSyncOverlay();openInfoModal('✅ ローカルをクリアしました（GAS通信失敗）',renderSettings);});
-    } else {
-      openInfoModal('✅ データをすべてクリアしました',renderSettings);
-    }
+    _saveToGasDirectly('✅ データをすべてクリアしました（GASにも反映）');
   });
 }
 function resetEverything(){
