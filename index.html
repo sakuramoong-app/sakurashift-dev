@@ -1237,7 +1237,7 @@ function inboxRequestActionGroup(gid, action){
   const wkLabels=keys.map(k=>{const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);return m?getWeekLabel(m[1]):'';}).filter(Boolean).join('、');
 
   if(action==='accept'){
-    // 全週を受理済みに登録＋チェッククリア
+    // 全週を受理済みに登録＋changeRequestsのシフトを反映＋チェッククリア
     keys.forEach(key=>{
       accepted[key+'_request']={acceptedAt:now,type:'request_accepted'};
       const m=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
@@ -1246,14 +1246,30 @@ function inboxRequestActionGroup(gid, action){
       const sub=S.submissions[key];
       if(!sub)return;
       const stores=S.castStores[cn]||[];
-      const items=[...new Set(['記録簿',...stores])];
+      const chkItems=[...new Set(['記録簿',...stores])];
+      // changeRequestsのシフトをS.shiftsに反映
       (sub.changeRequests||[]).forEach(ch=>{
-        items.forEach(it=>{
+        if(ch.type==='holiday'){
+          // 休日→シフト削除
+          delete S.shifts[cn+'_'+ch.ds];
+        } else {
+          // 時刻変更→シフト更新
+          if(!S.shifts[cn+'_'+ch.ds])S.shifts[cn+'_'+ch.ds]={};
+          S.shifts[cn+'_'+ch.ds].start=ch.start;
+          S.shifts[cn+'_'+ch.ds].end=ch.end;
+        }
+        // 該当日のチェックをクリア
+        chkItems.forEach(it=>{
           const ck=cn+'_'+wk+'_'+ch.ds+'_'+it;
-          if(S.checkData[ck]&&S.checkData[ck].checked) delete S.checkData[ck];
+          if(S.checkData[ck]) delete S.checkData[ck];
         });
       });
-      addLog('accept',cn,wk,'変更リクエスト受理');
+      // ステータスをchange_inputting（変更入力待ち）に変更してGAS保存
+      sub.status='change_inputting';
+      delete sub.changeRequests;
+      delete sub.changeRequestedAt;
+      gasConfirmSave(cn,wk,sub).catch(e=>console.warn(e));
+      addLog('accept',cn,wk,'変更リクエスト受理→変更入力待ち');
     });
     setAccepted(accepted);
     try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
@@ -1313,8 +1329,12 @@ function inboxRequestActionGroup(gid, action){
 
 // 受信ボックスのキャスト単位グループ化
 function _isAccepted(key, sub, accepted){
-  const type=sub.status==='change_requested'?'request':'submit';
-  return !!(accepted[key+'_'+type]||accepted[key]);
+  if(sub.status==='change_requested'){
+    // 変更リクエストはrequestキーのみ（submitキーは別扱い）
+    return !!(accepted[key+'_request']);
+  }
+  // 提出系はsubmitキー（旧キー後方互換）
+  return !!(accepted[key+'_submit']||accepted[key]);
 }
 function _groupInboxByCast(items, accepted){
   // キャスト名×タイプでグループ化（変更リクエストは全週まとめて1グループ）
@@ -1343,7 +1363,7 @@ function _groupInboxByCast(items, accepted){
 function renderInbox(){
   const items=collectInboxItems();
   const accepted=getAccepted();
-  const {pending,done,_isAccepted}=_groupInboxByCast(items,accepted);
+  const {pending,done}=_groupInboxByCast(items,accepted);
 
   // 未読バッジをリセット
   const arr=getLocalNtf(NTF_KEY_STAFF);
