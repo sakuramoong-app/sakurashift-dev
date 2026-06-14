@@ -4316,6 +4316,15 @@ function renderInputCheckBody(){
 // テーブルごとのスクロール位置を保持
 const icScrollPositions={};
 
+// castsearch / inputcheck どちらのページでも正しく再描画する
+function refreshInputCheckView(){
+  if(_currentStaffPage==='castsearch'&&typeof renderCastSearch==='function'){
+    renderCastSearch();
+  } else {
+    renderInputCheckBody();
+  }
+}
+
 function icSaveScrollPositions(){
   Object.keys(S.castStores||{}).forEach(name=>{
     const wrap=document.getElementById('wrap_'+name);
@@ -4358,14 +4367,14 @@ function icToggleCheck(castName,wk,ds,item){
   if(S.submissions[subKey]&&S.submissions[subKey].status==='waiting'){
     S.submissions[subKey].status='inputting';
   }
-  saveLocalOnly();renderInputCheckBody();
+  saveLocalOnly();refreshInputCheckView();
 }
 
 // 一括チェック（日付単位）
 function icBulkCheck(castName,wk,ds,checked){
   if(!currentStaffName){
     openInfoModal('⚠️ 先に入力者を選択してください');
-    renderInputCheckBody();
+    refreshInputCheckView();
     return;
   }
   if(checked){
@@ -4393,7 +4402,7 @@ function icBulkCheck(castName,wk,ds,checked){
 function icUndoBulkCheck(castName,wk,ds){
   // ポップアップでいいえを押した → チェックを戻す（再レンダリングでuncheckedに）
   icSaveScrollPositions();
-  renderInputCheckBody();
+  refreshInputCheckView();
 }
 
 function icDoBulkCheck(castName,wk,ds,checked){
@@ -4416,7 +4425,7 @@ function icDoBulkCheck(castName,wk,ds,checked){
       cd.checked=false;cd.checkedBy='';cd.color='';
     }
   });
-  saveLocalOnly();renderInputCheckBody();
+  saveLocalOnly();refreshInputCheckView();
 }
 
 // 残り一括チェック（未チェックの媒体のみチェック）
@@ -4444,7 +4453,7 @@ function icBulkCheckRemaining(castName,wk){
     });
   });
   if(changed===0){openInfoModal('未チェックの媒体はありませんでした');return;}
-  saveLocalOnly();renderInputCheckBody();
+  saveLocalOnly();refreshInputCheckView();
 }
 
 // Enter/Tab キーボードナビゲーション
@@ -4818,7 +4827,7 @@ function icRequestChange(castName,wk,ds){
     _pendingChanges[pk].add(ds);
   }
   // ボタンの色をDOMで即更新
-  renderInputCheckBody();
+  refreshInputCheckView();
 }
 
 function icDoRequestChange(castName,wk,ds){
