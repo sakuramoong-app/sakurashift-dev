@@ -480,7 +480,7 @@ const STATUS_LABEL={
   waiting:       '入力待ち',
   inputting:     '内勤入力中',
   confirmed:     '確定',
-  change_unlocked:'変更可能',
+  // change_unlocked:'変更可能', // 廃止（新フローでは使用しない）
   change_submitted:'変更入力待ち',
   change_inputting:'変更入力中',
   change_confirmed:'変更確定',
@@ -666,20 +666,26 @@ async function loadFromGAS(){
               return local&&local.pw!=null?{...u,pw:local.pw}:u;
             });
           }
-          // localのsubmissionsのうち自分以外の週のデータは不要だが
-          // 自分のsubmissionsはGASデータで上書き（内勤が確定した最新状態を反映）
-          // ただしlocalにあって自分のキャスト名のsubがGASに存在しない場合はlocalを保護
+          // キャスト側：GASデータで自分のsubmissionsを上書きするが
+          // change_requested はキャストが送信した最新状態→GASにあればGAS優先、なければlocal保護
           const _castName=currentUser&&currentUser.name;
           if(_castName&&localData.submissions){
             Object.entries(localData.submissions).forEach(([k,v])=>{
               if(!k.startsWith(_castName+'_'))return;
               if(!S.submissions[k]){
-                // GASにないsubmissionは基本削除（内勤リセット済みとみなす）
-                // ただし「GAS保存成功済み」フラグがないものは通信失敗の可能性→保護
+                // GASにないsubmission
                 if(!_castGasSaved.has(k)){
                   S.submissions[k]=v; // GAS未確認→localを保護
                 }
-                // _castGasSaved にある = GAS保存済みなのにGASにない = 内勤がリセットした → 復活させない
+              } else {
+                // GASにあるsubmissionで、localがchange_requested でGASが古いステータスの場合はlocalを優先
+                const gasStatus=S.submissions[k].status;
+                const localStatus=v.status;
+                const _crStatuses=['change_requested'];
+                if(_crStatuses.includes(localStatus)&&!_crStatuses.includes(gasStatus)){
+                  // localのchange_requestedが新しい→localを使う
+                  S.submissions[k]=v;
+                }
               }
             });
           }
@@ -2167,10 +2173,18 @@ function renderCal(){
     const isSun=date.getDay()===0,isSat=date.getDay()===6,isHol=HOLIDAYS.includes(ds);
     let cls='cal-cell'+(isToday?' today':'')+(conf?' locked':'')+(isSun?' sunday':'')+(isSat?' saturday':'')+(isHol&&!isSun?' holiday':'');
     let inner=`<div class="cal-date">${day}${isHol?`<span style="font-size:7px;color:#dc2626;margin-left:1px">祝</span>`:''}</div>${isClosed?'<div style="font-size:8px;color:#94a3b8;font-weight:600">休業</div>':''}`;
+    // 一時解除フラグとsubmission状態をここで取得（shの有無に関わらず必要）
+    const _wkTmpCal=getWeekKey(ds);
+    const _isTempUnlockedCal=_crTempUnlockWks.has(_wkTmpCal);
+    const _subTmpCal=S.submissions[name+'_'+_wkTmpCal];
+    // 一時解除中に休日にした（sh=null）→ シフトブロック外で表示
+    if(_isTempUnlockedCal&&(!sh||sh.start==null)){
+      inner+=`<div class="cal-shift-tag change-req" style="font-size:10px">🚫 休日<br><span style="font-size:8px;font-weight:700">リクエスト中</span></div>`;
+    }
     if(sh&&sh.start!=null){
       // ステータスに応じてタグの色を変える
-      const wkTmp=getWeekKey(ds);
-      const subTmp=S.submissions[name+'_'+wkTmp];
+      const wkTmp=_wkTmpCal;
+      const subTmp=_subTmpCal;
       let tc='cal-shift-tag ';
       if(conf){tc+='confirmed';}
       else if(subTmp){
@@ -2184,11 +2198,14 @@ function renderCal(){
         }
         else tc+='pending';
       } else {tc+='input';}
-      // change_requested の場合：変更リクエスト内容またはリクエスト中表示
+      // カレンダーセルのシフト表示
       if(subTmp&&subTmp.status==='change_requested'){
+        // change_requested：変更リクエスト内容を表示
         const _cr=(subTmp.changeRequests||[]).find(c=>c.ds===ds);
-        if(_cr){
-          inner+=`<div class="${tc}">${_cr.type==='holiday'?'🚫 休日':'⌚ '+fmtR(_cr.start,_cr.end)}<div style="font-size:8px;color:#dc2626;font-weight:700">リクエスト中</div></div>`;
+        if(_cr&&_cr.type==='holiday'){
+          inner+=`<div class="${tc}" style="font-size:10px">🚫 休日<br><span style="font-size:8px;font-weight:700">リクエスト中</span></div>`;
+        } else if(_cr){
+          inner+=`<div class="${tc}">⌚ ${fmtR(_cr.start,_cr.end)}<div style="font-size:8px;color:#dc2626;font-weight:700">リクエスト中</div></div>`;
         } else {
           inner+=`<div class="${tc}">${fmtR(sh.start,sh.end)}</div>`;
         }
@@ -2655,21 +2672,33 @@ function sendChangeRequestNew(changes){
     wkMap[c.wk].push(c);
   });
   // submissions を change_requested に変更
+  const subToSend={};
   Object.entries(wkMap).forEach(([wk,chgs])=>{
     const k=name+'_'+wk;
     if(!S.submissions[k])return;
     S.submissions[k].status='change_requested';
     S.submissions[k].changeRequestedAt=now;
     S.submissions[k].changeRequests=chgs.map(c=>({ds:c.ds,type:c.type,start:c.start,end:c.end}));
-    // ロック復元
     _crTempUnlockWks.delete(wk);
+    subToSend[k]=S.submissions[k];
+    // confirmSaveでGASに保存
     gasConfirmSave(name,wk,S.submissions[k]).catch(e=>console.warn(e));
   });
-  // 内勤に通知
+  // localStorageに保存
+  try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+  // GASの通知ストアに内勤向け通知を送信
   const wkLabels=Object.keys(wkMap).map(wk=>getWeekLabel(wk)).join('、');
   notifyStaff('change_request',`${name} さんから変更リクエストが届きました（${wkLabels}）`);
+  if(GAS_URL){
+    const ntfBody=new FormData();
+    ntfBody.append('action','addNotification');
+    ntfBody.append('token','sakura2025shift');
+    ntfBody.append('role','staff');
+    ntfBody.append('type','change_request');
+    ntfBody.append('message',`${name} さんから変更リクエストが届きました（${wkLabels}）`);
+    fetch(GAS_URL,{method:'POST',body:ntfBody}).catch(e=>console.warn(e));
+  }
   addLog('change_request',name,Object.keys(wkMap).join('/'),`${changes.length}日分`);
-  try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
   _crTempUnlockWks.clear();
   _crShiftBackup={};
   closeModal();
