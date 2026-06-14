@@ -1236,13 +1236,101 @@ function inboxRequestAction(key, action){
   }
 }
 
-// 受信ボックスのキャスト単位グループ化
-function _groupInboxByCast(items, accepted){
-  function _isAccepted(key, sub){
-    const type=sub.status==='change_requested'?'request':'submit';
-    return !!(accepted[key+'_'+type]||accepted[key]);
+// 変更リクエスト：グループ単位で受理/保留/キャンセル
+function inboxRequestActionGroup(gid, action){
+  const keys=(window._inboxGroupKeys||{})[gid];
+  if(!keys||!keys.length)return;
+  const accepted=getAccepted();
+  const now=new Date().toLocaleString('ja-JP');
+
+  // キャスト名を最初のキーから取得
+  const firstMatch=keys[0].match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+  if(!firstMatch)return;
+  const castName=firstMatch[1];
+  const wkLabels=keys.map(k=>{const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);return m?getWeekLabel(m[1]):'';}).filter(Boolean).join('、');
+
+  if(action==='accept'){
+    // 全週を受理済みに登録＋チェッククリア
+    keys.forEach(key=>{
+      accepted[key+'_request']={acceptedAt:now,type:'request_accepted'};
+      const m=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+      if(!m)return;
+      const cn=m[1],wk=m[2];
+      const sub=S.submissions[key];
+      if(!sub)return;
+      const stores=S.castStores[cn]||[];
+      const items=[...new Set(['記録簿',...stores])];
+      (sub.changeRequests||[]).forEach(ch=>{
+        items.forEach(it=>{
+          const ck=cn+'_'+wk+'_'+ch.ds+'_'+it;
+          if(S.checkData[ck]&&S.checkData[ck].checked) delete S.checkData[ck];
+        });
+      });
+      addLog('accept',cn,wk,'変更リクエスト受理');
+    });
+    setAccepted(accepted);
+    try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+    // 通知を1件にまとめて送信
+    notifyCast(castName,'confirm',`${wkLabels} の変更リクエストが受理されました ✅`);
+    if(GAS_URL){
+      const body=new FormData();
+      body.append('action','addNotification');
+      body.append('token','sakura2025shift');
+      body.append('role','cast');
+      body.append('castName',castName);
+      body.append('type','confirm');
+      body.append('message',`${wkLabels} の変更リクエストが受理されました ✅`);
+      fetch(GAS_URL,{method:'POST',body}).catch(e=>console.warn(e));
+    }
+    renderInbox();
+  } else if(action==='hold'){
+    keys.forEach(key=>{
+      accepted[key+'_request']={acceptedAt:now,type:'hold'};
+    });
+    setAccepted(accepted);
+    notifyCast(castName,'notice',`${wkLabels} の変更リクエストは保留中です`);
+    renderInbox();
+  } else if(action==='cancel'){
+    // キャンセル：変更前のシフトに戻す＋受理済みボックスへ
+    keys.forEach(key=>{
+      accepted[key+'_request']={acceptedAt:now,type:'cancelled'};
+      const m=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+      if(!m)return;
+      const cn=m[1],wk=m[2];
+      const sub=S.submissions[key];
+      if(!sub)return;
+      // 変更リクエストの日のシフトを元に戻す（changeRequestsから逆算）
+      // change_requestedになる前のステータスに戻す
+      sub.status='confirmed'; // 確定に戻す
+      delete sub.changeRequests;
+      delete sub.changeRequestedAt;
+      addLog('cancel',cn,wk,'変更リクエストキャンセル');
+      gasConfirmSave(cn,wk,sub).catch(e=>console.warn(e));
+    });
+    setAccepted(accepted);
+    try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+    notifyCast(castName,'notice',`${wkLabels} の変更リクエストはキャンセルされました`);
+    if(GAS_URL){
+      const body=new FormData();
+      body.append('action','addNotification');
+      body.append('token','sakura2025shift');
+      body.append('role','cast');
+      body.append('castName',castName);
+      body.append('type','cancel');
+      body.append('message',`${wkLabels} の変更リクエストはキャンセルされました`);
+      fetch(GAS_URL,{method:'POST',body}).catch(e=>console.warn(e));
+    }
+    renderInbox();
   }
-  // キャスト名×タイプでグループ化
+}
+
+// 受信ボックスのキャスト単位グループ化
+function _isAccepted(key, sub, accepted){
+  const type=sub.status==='change_requested'?'request':'submit';
+  return !!(accepted[key+'_'+type]||accepted[key]);
+}
+function _groupInboxByCast(items, accepted){
+  // キャスト名×タイプでグループ化（変更リクエストは全週まとめて1グループ）
   const groups={};
   items.forEach(it=>{
     const isReq=it.sub.status==='change_requested';
@@ -1252,17 +1340,17 @@ function _groupInboxByCast(items, accepted){
   });
   const pending=[], done=[];
   Object.values(groups).forEach(g=>{
-    const allAccepted=g.items.every(it=>_isAccepted(it.key,it.sub));
-    if(allAccepted) done.push(g);
-    else pending.push(g);
+    // グループ内に1件でも未受理があればpendingに
+    const anyNotAccepted=g.items.some(it=>!_isAccepted(it.key,it.sub,accepted));
+    if(anyNotAccepted) pending.push(g);
+    else done.push(g);
   });
-  // 最新提出日時順
   pending.sort((a,b)=>{
     const at=a.items[0].sub.submittedAt||a.items[0].sub.changeRequestedAt||'';
     const bt=b.items[0].sub.submittedAt||b.items[0].sub.changeRequestedAt||'';
     return bt.localeCompare(at);
   });
-  return {pending,done,_isAccepted};
+  return {pending,done};
 }
 
 function renderInbox(){
@@ -1318,28 +1406,38 @@ function renderInbox(){
         window._inboxGroupKeys[_gid]=gItems.map(it=>it.key);
         actionHtml=`<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="inboxAcceptGroupById('${_gid}')">✅ 受理</button>`;
       } else {
-        // 変更リクエスト：各週の変更内容＋受理/保留/キャンセル
-        gItems.forEach(it=>{
-          const changes=it.sub.changeRequests||[];
+        // 変更リクエスト：全週まとめて1枠、ボタン3つ
+        const fmt=ds=>{const d=new Date(ds);return `${d.getMonth()+1}/${d.getDate()}(${['日','月','火','水','木','金','土'][d.getDay()]})`;};
+        // 全キーをwindow変数に保存
+        const _gidReq='ig_'+castName.replace(/[^a-z0-9]/gi,'_')+'_request';
+        window._inboxGroupKeys=window._inboxGroupKeys||{};
+        window._inboxGroupKeys[_gidReq]=gItems.map(it=>it.key);
+        // 保留中チェック（いずれかの週が保留中）
+        const anyHold=gItems.some(it=>{
           const acc=accepted[it.key+'_request']||accepted[it.key];
-          const isHold=acc&&acc.type==='hold';
-          const changesHtml=changes.map(ch=>{
-            const dt=new Date(ch.ds);
-            return `<div style="font-size:11px;color:var(--text2)">${dt.getMonth()+1}/${dt.getDate()}(${['日','月','火','水','木','金','土'][dt.getDay()]})：${ch.type==='holiday'?'🚫 休日変更':fmtR(ch.start,ch.end)+'に変更'}</div>`;
-          }).join('');
-          const dates=getWeekDates(it.wk);
-          const fmt=ds=>{const d=new Date(ds);return `${d.getMonth()+1}/${d.getDate()}(${['日','月','火','水','木','金','土'][d.getDay()]})`;};
-          actionHtml+=`<div style="margin-top:8px;padding:6px 8px;background:#f8fafc;border-radius:6px;border:1px solid var(--border)">
-            <div style="font-size:11px;font-weight:700;margin-bottom:3px">${fmt(dates[0])} 〜 ${fmt(dates[6])}</div>
-            ${changesHtml}
-            ${isHold?`<div style="font-size:11px;color:#d97706;font-weight:700;margin:4px 0">⏸ 保留中</div>`:''}
-            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap">
-              <button class="btn btn-primary btn-sm" onclick="inboxRequestAction('${it.key}','accept')">✅ 受理</button>
-              <button class="btn btn-outline btn-sm" onclick="inboxRequestAction('${it.key}','hold')" style="color:#d97706;border-color:#d97706">⏸ 保留</button>
-              <button class="btn btn-outline btn-sm" onclick="inboxRequestAction('${it.key}','cancel')" style="color:#dc2626;border-color:#dc2626">❌ キャンセル</button>
-            </div>
-          </div>`;
+          return acc&&acc.type==='hold';
         });
+        // 変更内容を週ごとにまとめて表示
+        let changesAllHtml='';
+        gItems.forEach(it=>{
+          const dates=getWeekDates(it.wk);
+          const changes=it.sub.changeRequests||[];
+          const wkLine=`<div style="font-size:11px;font-weight:700;color:var(--text2);margin-top:6px">${fmt(dates[0])} 〜 ${fmt(dates[6])}</div>`;
+          const chLines=changes.map(ch=>{
+            const dt=new Date(ch.ds);
+            return `<div style="font-size:11px;color:var(--text);margin-left:8px">${dt.getMonth()+1}/${dt.getDate()}(${['日','月','火','水','木','金','土'][dt.getDay()]})：${ch.type==='holiday'?'🚫 休日変更':fmtR(ch.start,ch.end)+'に変更'}</div>`;
+          }).join('');
+          changesAllHtml+=wkLine+chLines;
+        });
+        actionHtml=`<div style="margin-top:6px;padding:8px;background:#fef2f8;border-radius:6px;border:1px solid var(--pink4)">
+          ${changesAllHtml}
+          ${anyHold?`<div style="font-size:11px;color:#d97706;font-weight:700;margin:6px 0">⏸ 保留中</div>`:''}
+          <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" onclick="inboxRequestActionGroup('${_gidReq}','accept')">✅ 受理</button>
+            <button class="btn btn-outline btn-sm" onclick="inboxRequestActionGroup('${_gidReq}','hold')" style="color:#d97706;border-color:#d97706">⏸ 保留</button>
+            <button class="btn btn-outline btn-sm" onclick="inboxRequestActionGroup('${_gidReq}','cancel')" style="color:#dc2626;border-color:#dc2626">❌ キャンセル</button>
+          </div>
+        </div>`;
       }
 
       html+=`<div class="ntf-item unread" style="flex-direction:column;align-items:flex-start;margin-bottom:8px">
