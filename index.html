@@ -681,9 +681,8 @@ async function loadFromGAS(){
                 // GASにあるsubmissionで、localがchange_requested でGASが古いステータスの場合はlocalを優先
                 const gasStatus=S.submissions[k].status;
                 const localStatus=v.status;
-                const _crStatuses=['change_requested'];
-                if(_crStatuses.includes(localStatus)&&!_crStatuses.includes(gasStatus)){
-                  // localのchange_requestedが新しい→localを使う
+                // change_requestedはlocalを優先（GASに保存されるまでのタイムラグ対応）
+                if(localStatus==='change_requested'&&gasStatus!=='change_requested'){
                   S.submissions[k]=v;
                 }
               }
@@ -991,12 +990,11 @@ async function markNotificationsRead(role, castName, ids){
 // バッジ数を更新
 function updateNtfBadge(){
   if(currentType==='staff'){
-    // 受信ボックスの未受理件数をバッジに表示
+    // 受信ボックスの未受理件数をキャスト単位でカウント
     const accepted=getAccepted?getAccepted():{};
-    const inboxCount=Object.entries(S&&S.submissions||{}).filter(([k,sub])=>{
-      if(!sub||!['waiting','change_requested','change_submitted'].includes(sub.status))return false;
-      return !accepted[k];
-    }).length;
+    const items=typeof collectInboxItems==='function'?collectInboxItems():[];
+    const {pending}=typeof _groupInboxByCast==='function'?_groupInboxByCast(items,accepted):{pending:[]};
+    const inboxCount=pending.length; // キャスト×タイプのグループ数
     const badge = document.getElementById('staffNtfBadge');
     if(badge){
       badge.textContent = inboxCount;
@@ -1224,121 +1222,69 @@ function inboxRequestAction(key, action){
 }
 
 // 変更リクエスト：グループ単位で受理/保留/キャンセル
+// 変更リクエスト：シンプル通知型
+// 受理=確認済み（シフト自動書き換えなし）、内勤が手動でシフト修正する
 function inboxRequestActionGroup(gid, action){
   const keys=(window._inboxGroupKeys||{})[gid];
   if(!keys||!keys.length)return;
   const accepted=getAccepted();
   const now=new Date().toLocaleString('ja-JP');
-
-  // キャスト名を最初のキーから取得
   const firstMatch=keys[0].match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
   if(!firstMatch)return;
   const castName=firstMatch[1];
-  const wkLabels=keys.map(k=>{const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);return m?getWeekLabel(m[1]):'';}).filter(Boolean).join('、');
+  const _uniqWks=[...new Set(keys.map(k=>{const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);return m?m[1]:'';}).filter(Boolean))];
+  const wkLabels=_uniqWks.map(wk=>getWeekLabel(wk)).join('、');
 
   if(action==='accept'){
-    // 全週を受理済みに登録＋changeRequestsのシフトを反映＋チェッククリア
+    // 受理：確認済みとして受理済みへ移動。シフトはそのまま（内勤が手動で修正）
     keys.forEach(key=>{
       const m=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
       if(!m)return;
       const cn=m[1],wk=m[2];
       const sub=S.submissions[key];
       if(!sub)return;
-      const stores=S.castStores[cn]||[];
-      const chkItems=[...new Set(['記録簿',...stores])];
-      // changeRequestsから変更日リストを保存（入力チェック表示用）
-      const changeDates=(sub.changeRequests||[]).map(ch=>ch.ds);
-      const holidayDates=(sub.changeRequests||[]).filter(ch=>ch.type==='holiday').map(ch=>ch.ds);
-      // キャンセル時に元に戻せるよう変更前のシフトを保存
-      const originalShifts={};
-      changeDates.forEach(ds=>{
-        const origSh=S.shifts[cn+'_'+ds];
-        originalShifts[ds]=origSh?{...origSh}:null; // nullは元々シフトなし
-      });
-      accepted[key+'_request']={acceptedAt:now,type:'request_accepted',changeDates,holidayDates,originalShifts};
-      // changeRequestsのシフトをS.shiftsに反映
-      (sub.changeRequests||[]).forEach(ch=>{
-        if(ch.type==='holiday'){
-          delete S.shifts[cn+'_'+ch.ds];
-        } else {
-          if(!S.shifts[cn+'_'+ch.ds])S.shifts[cn+'_'+ch.ds]={};
-          S.shifts[cn+'_'+ch.ds].start=ch.start;
-          S.shifts[cn+'_'+ch.ds].end=ch.end;
-        }
-        // 該当日のチェックをクリア（グレーアウトはしない）
-        chkItems.forEach(it=>{
-          const ck=cn+'_'+wk+'_'+ch.ds+'_'+it;
-          if(S.checkData[ck]) delete S.checkData[ck];
-        });
-      });
-      // ステータスをchange_inputting（変更入力待ち）に変更してGAS保存
+      accepted[key+'_request']={acceptedAt:now,type:'request_accepted'};
+      // ステータスをchange_inputtingに変更（内勤が変更作業中）
       sub.status='change_inputting';
       delete sub.changeRequests;
       delete sub.changeRequestedAt;
       gasConfirmSave(cn,wk,sub).catch(e=>console.warn(e));
-      addLog('accept',cn,wk,'変更リクエスト受理→変更入力待ち');
+      addLog('accept',cn,wk,'変更リクエスト受理（内勤が手動変更）');
     });
     setAccepted(accepted);
     try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
-    // 通知を1件にまとめて送信
-    notifyCast(castName,'confirm',`${wkLabels} の変更リクエストが受理されました ✅`);
+    // キャストに通知
+    notifyCast(castName,'confirm',`${wkLabels} の変更リクエストが受理されました。内勤が変更対応します ✅`);
     if(GAS_URL){
       const body=new FormData();
       body.append('action','addNotification');
       body.append('token','sakura2025shift');
-      body.append('role','cast');
-      body.append('castName',castName);
+      body.append('role','cast');body.append('castName',castName);
       body.append('type','confirm');
-      body.append('message',`${wkLabels} の変更リクエストが受理されました ✅`);
+      body.append('message',`${wkLabels} の変更リクエストが受理されました。内勤が変更対応します ✅`);
       fetch(GAS_URL,{method:'POST',body}).catch(e=>console.warn(e));
     }
     renderInbox();
+
   } else if(action==='hold'){
-    keys.forEach(key=>{
-      accepted[key+'_request']={acceptedAt:now,type:'hold'};
-    });
+    keys.forEach(key=>{accepted[key+'_request']={acceptedAt:now,type:'hold'};});
     setAccepted(accepted);
-    notifyCast(castName,'notice',`${wkLabels} の変更リクエストは保留中です`);
     renderInbox();
+
   } else if(action==='cancel'){
-    // キャンセル：変更前のシフトに戻す＋受理済みボックスへ
+    // キャンセル：ステータスをconfirmedに戻して受理済みへ
     keys.forEach(key=>{
-      const prevAccData=accepted[key+'_request']; // 受理時に保存した変更日情報
-      accepted[key+'_request']={acceptedAt:now,type:'cancelled'};
       const m=key.match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
       if(!m)return;
       const cn=m[1],wk=m[2];
       const sub=S.submissions[key];
       if(!sub)return;
-
-      // シフトを元に戻す
-      if(sub.status==='change_requested'&&sub.changeRequests){
-        // 未受理キャンセル：changeRequestsから変更を取り消す
-        sub.changeRequests.forEach(ch=>{
-          // シフトを削除（受理前なので変更はS.shiftsには反映されていない）
-          // 特に何もしなくてよい（S.shiftsは変更されていないはず）
-        });
-        delete sub.changeRequests;
-        delete sub.changeRequestedAt;
-      } else if(sub.status==='change_inputting'&&prevAccData&&prevAccData.changeDates){
-        // 受理済みキャンセル：originalShiftsを使って元に戻す
-        prevAccData.changeDates.forEach(ds=>{
-          const orig=prevAccData.originalShifts&&prevAccData.originalShifts[ds];
-          if(orig===null||orig===undefined){
-            // 元々シフトなし→削除
-            delete S.shifts[cn+'_'+ds];
-          } else {
-            // 元のシフトを復元
-            S.shifts[cn+'_'+ds]={...orig};
-          }
-        });
-      }
-
+      accepted[key+'_request']={acceptedAt:now,type:'cancelled'};
       sub.status='confirmed';
       delete sub.changeRequests;
       delete sub.changeRequestedAt;
-      addLog('cancel',cn,wk,'変更リクエストキャンセル');
       gasConfirmSave(cn,wk,sub).catch(e=>console.warn(e));
+      addLog('cancel',cn,wk,'変更リクエストキャンセル');
     });
     setAccepted(accepted);
     try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
@@ -1347,8 +1293,7 @@ function inboxRequestActionGroup(gid, action){
       const body=new FormData();
       body.append('action','addNotification');
       body.append('token','sakura2025shift');
-      body.append('role','cast');
-      body.append('castName',castName);
+      body.append('role','cast');body.append('castName',castName);
       body.append('type','cancel');
       body.append('message',`${wkLabels} の変更リクエストはキャンセルされました`);
       fetch(GAS_URL,{method:'POST',body}).catch(e=>console.warn(e));
@@ -4507,19 +4452,11 @@ function renderInputCheckBody(){
       const isPending=_pendingChanges[_pk]&&_pendingChanges[_pk].has(ds);
       const shiftLabel=sh&&sh.start!=null&&!isHolidayChange?fmtR(sh.start,sh.end):'';
       // 変更リクエスト受理済みの日：赤文字表示用フラグ
-      // 変更入力待ち（change_inputting）のとき変更日を赤文字表示
-      // changeRequestsは受理時に削除するので、change_inputtingかつシフト変更済みを検出
-      // 受理済みキーに変更日情報を保存しておく必要があるため、
-      // ここでは dsub.status==='change_inputting' の日付セルを赤文字にする
-      const _crAccepted=getAccepted&&getAccepted();
-      const _crKey=u.name+'_'+dsWk;
-      const _crAcceptedData=_crAccepted&&_crAccepted[_crKey+'_request'];
-      // change_inputting かつ accepted に変更日リストがある日
-      const _isChangeInputting=dsub.status==='change_inputting';
-      const _crChangeDates=_crAcceptedData&&_crAcceptedData.changeDates; // 受理時に保存した変更日リスト
-      const _isChangeRequestedDay=_isChangeInputting&&_crChangeDates&&_crChangeDates.includes(ds);
-      const _isChangeRequestHoliday=_isChangeRequestedDay&&_crAcceptedData.holidayDates&&_crAcceptedData.holidayDates.includes(ds);
-      const _crChangeShift=_isChangeRequestedDay&&!_isChangeRequestHoliday?S.shifts[u.name+'_'+ds]:null;
+      // change_inputting：内勤が手動変更中のステータス（シフト自動書き換えなし）
+      // 特別な表示は不要（通常の入力チェックと同じ）
+      const _isChangeRequestedDay=false;
+      const _isChangeRequestHoliday=false;
+      const _crChangeShift=null;
 
       // この日のチェック状態分析（月表示時はdsWkを使用）
       const dayChecks=items.map(it=>{
@@ -4578,8 +4515,7 @@ function renderInputCheckBody(){
         const storeLabel=`<div style="font-size:8px;color:#1e2a3a;font-weight:600;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:50px;text-align:center">${shortName(it)}</div>`;
         const isRestDay=!sh||sh.start==null;
         const isChangeUnlocked=sub&&sub.status==='change_unlocked'&&!isChangedDay;
-        // 旧フロー：change_submittedのみholodayCellとして扱う（change_inputtingは新フローでチェック可能）
-      const _isHolidayCell=isHolidayChange&&dsub.status==='change_submitted';
+        const _isHolidayCell=isHolidayChange&&(dsub.status==='change_submitted'||dsub.status==='change_inputting');
       const cellOnclick=(isRestDay||_isHolidayCell||isChangedDay&&dsub&&dsub.status==='change_unlocked')?'':`onclick="icToggleCheck('${u.name}','${dsWk}','${ds}','${it}')"`;
         return `<td class="ic-check-cell ${cd.checked?'checked':''}" id="${cellId}"
           style="padding:3px 2px!important;min-width:52px;${_hist&&_hist.length>1?'width:auto;':'width:52px;'}${_isHolidayCell?'background:#f1f5f9;':cellBg?`background:${cellBg};`:''}${_isHolidayCell?'border-left:3px solid #cbd5e1!important':borderCol};vertical-align:top;${(isRestDay||_isHolidayCell)?'pointer-events:none;':''}"
@@ -4594,8 +4530,7 @@ function renderInputCheckBody(){
 
       const isEven=dsIdx%2===1;
       const evenCls=isEven?' ic-date-even':'';
-      // change_inputtingの休日変更日はnoShiftClsを付けない（チェック可能にするため）
-      const noShiftCls=(!sh||sh.start==null)&&!(_isChangeRequestHoliday)?' ic-row-noshift':'';
+      const noShiftCls=(!sh||sh.start==null)?' ic-row-noshift':'';
       const effectiveRowClass=noShiftCls?' ':rowClass; // シフトなしは他クラスを無効化
       // ===== 上段 =====
       html+=`<tr class="${effectiveRowClass}${evenCls}${noShiftCls} ic-row-upper ic-date-top" data-rest="${noShiftCls?'1':'0'}" data-cast="${u.name}" data-date="${ds}">
@@ -4617,8 +4552,8 @@ function renderInputCheckBody(){
           ${sub.checkedDates&&sub.checkedDates[ds]?`<div style="font-size:8px;color:#94a3b8;margin-top:2px;line-height:1.3">${typeof sub.checkedDates[ds]==="object"?sub.checkedDates[ds].datetime:sub.checkedDates[ds]}</div>`:''}
         </td>
         <td class="ic-bulk-cell" rowspan="2" style="padding:3px 2px!important;min-width:32px;border-right:1px solid var(--border)!important;vertical-align:middle">
-          <input type="checkbox" title="一括チェック" ${allCheckedForDay?'checked':''} ${((!sh||sh.start==null)&&!_isChangeRequestHoliday)?'disabled':''}
-            style="width:13px;height:13px;${((!sh||sh.start==null)&&!_isChangeRequestHoliday)?'cursor:default;opacity:.4;':'cursor:pointer;'}accent-color:var(--pink2);display:block;margin:0 auto"
+          <input type="checkbox" title="一括チェック" ${allCheckedForDay?'checked':''} ${(!sh||sh.start==null)?'disabled':''}
+            style="width:13px;height:13px;${(!sh||sh.start==null)?'cursor:default;opacity:.4;':'cursor:pointer;'}accent-color:var(--pink2);display:block;margin:0 auto"
             onchange="icBulkCheck('${u.name}','${dsWk}','${ds}',this.checked)">
         </td>
         ${STORES.slice(0,7).map((it,i)=>items.includes(it)?mkChkCell(it,items.indexOf(it)):`<td style="min-width:52px;background:#f0f0f0;border:1px solid #d1d5db;vertical-align:top;padding:3px 2px"><div style="font-size:8px;color:rgba(0,0,0,.2);margin-bottom:2px;white-space:nowrap;text-align:center">${shortName(it)}</div><div style="width:14px;height:14px;border:1.5px solid #c0c0c0;border-radius:3px;background:#e5e7eb;margin:0 auto"></div></td>`).join('')}<td style="min-width:48px;background:inherit"></td>
