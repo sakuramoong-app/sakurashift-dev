@@ -555,8 +555,8 @@ function migrateState(data){
     Object.values(data.submissions).forEach(sub=>{
       if(sub.status==='checking')sub.status='inputting';
       if(sub.status==='checked')sub.status='inputting';
-      if(sub.status==='change_requested')sub.status='change_unlocked';
-      if(sub.status==='change_waiting')sub.status='change_unlocked';
+      // change_requested は新フローのステータスなので変換しない
+      if(sub.status==='change_waiting')sub.status='change_unlocked'; // 旧旧フローのみ
     });
   }
   // businessHours がなければ初期値を追加
@@ -1076,6 +1076,16 @@ function renderCastNotifications(){
     markNotificationsRead('cast', castName, unreadIds);
     updateNtfBadge();
   }
+  // タイプ別にグループ化（同タイプの通知をまとめる）
+  const typeOrder=['confirm','change_confirm','cancel','notice','unlock'];
+  const typeLabel={confirm:'✅ 受理',change_confirm:'✅ 変更受理',cancel:'❌ キャンセル',notice:'📢 お知らせ',unlock:'🔓 変更許可',change_request:'📝 変更リクエスト'};
+  // 同じtypeのものを日時降順でグループ
+  const groups={};
+  arr.forEach(n=>{
+    const t=n.type||'notice';
+    if(!groups[t])groups[t]={type:t,items:[]};
+    groups[t].items.push(n);
+  });
   let html = `<div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <div class="card-title" style="margin:0"><span class="ct-icon ct-pink">🔔</span>通知</div>
@@ -1084,13 +1094,25 @@ function renderCastNotifications(){
   if(!arr.length){
     html += `<p style="color:var(--text2);font-size:13px;padding:8px 0">通知はありません</p>`;
   } else {
-    arr.forEach(n=>{
-      html += `<div class="ntf-item${n.read?'':' unread'}">
-        <div class="ntf-item-icon">${ntfTypeIcon(n.type)}</div>
-        <div class="ntf-item-body">
-          <div class="ntf-item-msg">${escHtml(n.message)}</div>
-          <div class="ntf-item-time">${n.createdAt}</div>
+    // タイプ別にまとめて表示
+    const sortedGroups=Object.values(groups).sort((a,b)=>{
+      const at=a.items[0].createdAt||'';
+      const bt=b.items[0].createdAt||'';
+      return bt.localeCompare(at);
+    });
+    sortedGroups.forEach(g=>{
+      const icon=ntfTypeIcon(g.type);
+      const label=typeLabel[g.type]||g.type;
+      const hasUnread=g.items.some(n=>!n.read);
+      // メッセージ一覧（重複除去）
+      const msgs=[...new Set(g.items.map(n=>n.message))];
+      html+=`<div class="ntf-item${hasUnread?' unread':''}" style="flex-direction:column;align-items:flex-start">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+          <span class="ntf-item-icon">${icon}</span>
+          <span style="font-weight:700;font-size:13px">${label}</span>
+          <span style="font-size:10px;color:var(--text2)">${g.items[0].createdAt||''}</span>
         </div>
+        ${msgs.map(m=>`<div style="font-size:12px;color:var(--text);padding:2px 0 2px 28px">${escHtml(m)}</div>`).join('')}
       </div>`;
     });
   }
@@ -1158,7 +1180,13 @@ function inboxAcceptAll(){
   openConfirmModal(`シフト提出・変更提出 ${targets.length}件を一括受理します。
 キャスト全員に受理通知が送信されます。よろしいですか？`,
     ()=>{
-      targets.forEach(it=>inboxAccept(it.key,true));
+      // キャスト単位でグループ化して通知を1件にまとめる
+      const grpMap={};
+      targets.forEach(it=>{
+        if(!grpMap[it.castName])grpMap[it.castName]=[];
+        grpMap[it.castName].push(it.key);
+      });
+      Object.values(grpMap).forEach(keys=>inboxAcceptGroup(keys));
       openInfoModal(`✅ ${targets.length}件を受理しました`);
     }
   );
@@ -1284,8 +1312,11 @@ function renderInbox(){
       let actionHtml='';
       if(type==='submit'){
         // まとめて受理ボタン
-        const keys=gItems.map(it=>it.key);
-        actionHtml=`<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="inboxAcceptGroup(${JSON.stringify(keys)})">✅ 受理</button>`;
+        // keysをwindow変数に保持してIDで参照（特殊文字対策）
+        const _gid='ig_'+castName.replace(/[^a-z0-9]/gi,'_')+'_'+type;
+        window._inboxGroupKeys=window._inboxGroupKeys||{};
+        window._inboxGroupKeys[_gid]=gItems.map(it=>it.key);
+        actionHtml=`<button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="inboxAcceptGroupById('${_gid}')">✅ 受理</button>`;
       } else {
         // 変更リクエスト：各週の変更内容＋受理/保留/キャンセル
         gItems.forEach(it=>{
@@ -1383,9 +1414,40 @@ function inboxJumpToCheck(castName, firstWk){
 
 // グループ単位の一括受理
 function inboxAcceptGroup(keys){
-  keys.forEach(key=>inboxAccept(key,true));
+  if(!keys||!keys.length)return;
+  const accepted=getAccepted();
+  // まとめて受理済みに登録
+  keys.forEach(key=>{
+    accepted[key+'_submit']={acceptedAt:new Date().toLocaleString('ja-JP'),type:'accepted'};
+    addLog('accept',key.replace(/_\d{4}-\d{2}-\d{2}$/,''),key.match(/_(\d{4}-\d{2}-\d{2})$/)?.[1]||'','受信ボックスから受理');
+  });
+  setAccepted(accepted);
+  // キャスト名と週リストをまとめて通知（1件に集約）
+  if(keys.length){
+    const firstMatch=keys[0].match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
+    if(firstMatch){
+      const castName=firstMatch[1];
+      const wkLabels=keys.map(k=>{const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);return m?getWeekLabel(m[1]):'';}).filter(Boolean).join('、');
+      notifyCast(castName,'confirm',`${wkLabels} のシフト提出が受理されました ✅`);
+      if(GAS_URL){
+        const body=new FormData();
+        body.append('action','addNotification');
+        body.append('token','sakura2025shift');
+        body.append('role','cast');
+        body.append('castName',castName);
+        body.append('type','confirm');
+        body.append('message',`${wkLabels} のシフト提出が受理されました ✅`);
+        fetch(GAS_URL,{method:'POST',body}).catch(e=>console.warn(e));
+      }
+    }
+  }
   updateNtfBadge();
   renderInbox();
+}
+function inboxAcceptGroupById(gid){
+  const keys=(window._inboxGroupKeys||{})[gid];
+  if(!keys||!keys.length){renderInbox();return;}
+  inboxAcceptGroup(keys);
 }
 
 // ===== 通知を作成してGASに保存するヘルパー =====
