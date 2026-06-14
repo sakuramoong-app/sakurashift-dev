@@ -1984,13 +1984,12 @@ function openConfirmModal(msg,cb){
 // ===== HELPERS =====
 function isConfirmed(name,ds){
   const wk=getWeekKey(ds);
+  // 一時解除中の週はロックしない
+  if(_crTempUnlockWks&&_crTempUnlockWks.has(wk))return false;
   const s=S.submissions[name+'_'+wk];
   if(!s)return false;
-  // 提出済み全ステータスをロック（waiting以降は全てロック）
-  // 変更可能（change_unlocked）のみキャストが再提出できる
   if(s.status==='change_unlocked'){
-    // changedDatesに含まれる日のみ解除、含まれない日はロック
-    if(!s.changedDates||s.changedDates.length===0)return true; // 空なら全日ロック
+    if(!s.changedDates||s.changedDates.length===0)return true;
     return !s.changedDates.includes(ds);
   }
   const lockedStatuses=['waiting','inputting','confirmed',
@@ -4103,8 +4102,8 @@ function renderInputCheckBody(){
           <div class="cast-avatar ${avc(u.name)}" style="width:30px;height:30px;font-size:12px">${u.name[0]}</div>
           <span style="font-weight:800;font-size:15px">${u.name}</span>
           ${(()=>{const mn=S.castMediaNames&&S.castMediaNames[u.name]||{};const tags=[];if(mn.gokumon)tags.push(`<span style="font-size:10px;color:#dc2626;background:#fee2e2;border-radius:4px;padding:1px 6px;font-weight:600">極:${escHtml(mn.gokumon)}</span>`);if(mn.juhachi)tags.push(`<span style="font-size:10px;color:#2563eb;background:#dbeafe;border-radius:4px;padding:1px 6px;font-weight:600">18:${escHtml(mn.juhachi)}</span>`);return tags.join('');})()}
-          <span style="font-size:12px;color:var(--text2)">${getWeekLabel(icWeekKey)}</span>
-          <span class="badge ${sBadge[sub.status]||'badge-gray'}">${sMap[sub.status]||sub.status}</span>
+          <span style="font-weight:800;font-size:15px;color:var(--text2)">${(()=>{const _cw=getCurrWk(),_nw=getNextWk(),_nnw=getNextNextWk(),_nnnw=getWeekKey(new Date(Date.now()+21*86400000));return icWeekKey===_cw?'今週':icWeekKey===_nw?'来週':icWeekKey===_nnw?'3週間後':icWeekKey===_nnnw?'4週間後':getWeekLabel(icWeekKey);})()}</span>
+          <span class="badge ${sBadge[sub.status]||'badge-gray'}" style="font-size:13px;padding:4px 10px">${sMap[sub.status]||sub.status}</span>
           ${S.castFixedMemo&&S.castFixedMemo[u.name]?`<span style="font-size:10px;color:#0284c7;background:#e0f2fe;border-radius:10px;padding:1px 8px">📌 ${escHtml(S.castFixedMemo[u.name].slice(0,20))}${S.castFixedMemo[u.name].length>20?'...':''}</span>`:''}
         </div>
         <div style="display:flex;gap:6px;align-items:center">
@@ -4257,13 +4256,7 @@ function renderInputCheckBody(){
         <td class="ic-status-cell" rowspan="2" style="vertical-align:middle;min-width:72px;width:72px;font-size:10px;padding:4px 3px!important;word-break:keep-all;line-height:1.4">
           ${dayBadgeCls?`<span class="day-badge ${dayBadgeCls}" style="font-size:10px;white-space:normal;word-break:keep-all;line-height:1.4;text-align:center;display:block;width:100%">${dayBadge}</span>`:dayBadge}
         </td>
-        <td class="ic-change-cell" rowspan="2" style="position:sticky;left:72px;z-index:1;background:inherit;border-right:1px solid var(--border)!important;vertical-align:middle;min-width:44px;width:44px">
-          <button style="padding:3px 6px;font-size:11px;font-weight:700;background:${isPending?'#fef08a':isChangedDay?'#fde68a':'#e0e7ff'};color:${isPending?'#78350f':isChangedDay?'#92400e':'#3730a3'};border:1px solid ${isPending?'#fbbf24':isChangedDay?'#fcd34d':'#c7d2fe'};border-radius:5px;cursor:pointer;display:block;margin:0 auto;white-space:nowrap"
-            onclick="icRequestChange('${u.name}','${icWeekKey}','${ds}')">
-            ${isPending?'✓変更':'変更'}
-          </button>
-        </td>
-        <td class="ic-date-cell ${dateCls}" rowspan="2" style="position:sticky;left:116px;z-index:1;vertical-align:middle;text-align:center;min-width:88px;width:88px;border-right:2px solid var(--border)!important;padding:4px 3px!important">
+        <td class="ic-date-cell ${dateCls}" rowspan="2" style="position:sticky;left:72px;z-index:1;vertical-align:middle;text-align:center;min-width:88px;width:88px;border-right:2px solid var(--border)!important;padding:4px 3px!important">
           <div style="font-size:10px;font-weight:600;color:#1e2a3a">${d.getMonth()+1}/${d.getDate()}<span style="color:${(isSun||isHol)?'#dc2626':isSat?'#2563eb':'#1e2a3a'}">(${DOWNAMES[dow]}${isHol?'祝':''})</span></div>
           ${_isChangeRequestHoliday
             ?`<div style="font-size:11px;font-weight:700;color:#dc2626;margin-top:3px;background:#fef2f2;border-radius:4px;padding:2px 5px;display:inline-block;border:1px solid #fca5a5">🚫 休日</div>`
@@ -4800,14 +4793,14 @@ function confShiftIC(castName,wk){
     hideSyncOverlay();
     const statusLabel = { confirmed:'確定済み', change_confirmed:'変更確定', inputting:'内勤入力中', change_inputting:'変更入力中' }[sub.status] || STATUS_LABEL[sub.status] || sub.status;
     if (!confirmOK) {
-      openInfoModal('⚠️ 保存に失敗しました。時間をおいて再試行してください。', renderInputCheck);
+      openInfoModal('⚠️ 保存に失敗しました。時間をおいて再試行してください。', ()=>{if(typeof renderCastSearch==='function'&&_currentStaffPage==='castsearch')renderCastSearch();else renderInputCheck();});
     } else {
-      openInfoModal(`✅ 更新・保存しました<br><span style="font-size:12px;color:var(--text2)">${castName}：${statusLabel}（${doneChecks}/${totalChecks}チェック）</span>`, renderInputCheck);
+      openInfoModal(`✅ 更新・保存しました<br><span style="font-size:12px;color:var(--text2)">${castName}：${statusLabel}（${doneChecks}/${totalChecks}チェック）</span>`, ()=>{if(typeof renderCastSearch==='function'&&_currentStaffPage==='castsearch')renderCastSearch();else renderInputCheck();});
     }
   }).catch(e => {
     hideSyncOverlay();
     const statusLabel = STATUS_LABEL[sub.status] || sub.status;
-    openInfoModal(`⚠️ 保存に失敗しました（ローカルには保存済み）<br><span style="font-size:12px;color:var(--text2)">${castName}：${statusLabel}</span><br><span style="font-size:11px;color:#dc2626">📱 ログアウト → 再ログイン → 同期ボタンで復旧できます</span>`, renderInputCheck);
+    openInfoModal(`⚠️ 保存に失敗しました（ローカルには保存済み）<br><span style="font-size:12px;color:var(--text2)">${castName}：${statusLabel}</span><br><span style="font-size:11px;color:#dc2626">📱 ログアウト → 再ログイン → 同期ボタンで復旧できます</span>`, ()=>{if(typeof renderCastSearch==='function'&&_currentStaffPage==='castsearch')renderCastSearch();else renderInputCheck();});
   });
 }
 
