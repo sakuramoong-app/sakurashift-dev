@@ -5823,8 +5823,27 @@ function resetAll(){
     S.checkData={};
     S.checkNotes={};
     S.shifts={};
-    saveState(false);
-    openInfoModal('✅ データをすべてクリアしました',renderSettings);
+    // 全キャストをリセット対象としてマーク（マージで復活しないよう）
+    (S.castList||[]).forEach(u=>_resetCastNames.add(u.name));
+    try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
+    // GASにも直接クリア済みデータを上書き送信
+    if(GAS_URL){
+      const gasData={...S};
+      delete gasData.noticeImage;
+      delete gasData.personalNoticeImages;
+      delete gasData.operationLog;
+      const body=new FormData();
+      body.append('action','save');
+      body.append('token','sakura2025shift');
+      body.append('data',JSON.stringify(gasData));
+      showSyncOverlay('クリア中...');
+      fetch(GAS_URL,{method:'POST',body})
+        .then(r=>r.json())
+        .then(()=>{hideSyncOverlay();openInfoModal('✅ データをすべてクリアしました（GASにも反映）',renderSettings);})
+        .catch(()=>{hideSyncOverlay();openInfoModal('✅ ローカルをクリアしました（GAS通信失敗）',renderSettings);});
+    } else {
+      openInfoModal('✅ データをすべてクリアしました',renderSettings);
+    }
   });
 }
 function resetEverything(){
