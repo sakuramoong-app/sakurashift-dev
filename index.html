@@ -1076,16 +1076,6 @@ function renderCastNotifications(){
     markNotificationsRead('cast', castName, unreadIds);
     updateNtfBadge();
   }
-  // タイプ別にグループ化（同タイプの通知をまとめる）
-  const typeOrder=['confirm','change_confirm','cancel','notice','unlock'];
-  const typeLabel={confirm:'✅ 受理',change_confirm:'✅ 変更受理',cancel:'❌ キャンセル',notice:'📢 お知らせ',unlock:'🔓 変更許可',change_request:'📝 変更リクエスト'};
-  // 同じtypeのものを日時降順でグループ
-  const groups={};
-  arr.forEach(n=>{
-    const t=n.type||'notice';
-    if(!groups[t])groups[t]={type:t,items:[]};
-    groups[t].items.push(n);
-  });
   let html = `<div class="card">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <div class="card-title" style="margin:0"><span class="ct-icon ct-pink">🔔</span>通知</div>
@@ -1094,25 +1084,22 @@ function renderCastNotifications(){
   if(!arr.length){
     html += `<p style="color:var(--text2);font-size:13px;padding:8px 0">通知はありません</p>`;
   } else {
-    // タイプ別にまとめて表示
-    const sortedGroups=Object.values(groups).sort((a,b)=>{
-      const at=a.items[0].createdAt||'';
-      const bt=b.items[0].createdAt||'';
-      return bt.localeCompare(at);
+    // 重複メッセージを除去して最新順に表示
+    const seen=new Set();
+    const deduped=arr.filter(n=>{
+      const k=n.type+'|'+n.message;
+      if(seen.has(k))return false;
+      seen.add(k);
+      return true;
     });
-    sortedGroups.forEach(g=>{
-      const icon=ntfTypeIcon(g.type);
-      const label=typeLabel[g.type]||g.type;
-      const hasUnread=g.items.some(n=>!n.read);
-      // メッセージ一覧（重複除去）
-      const msgs=[...new Set(g.items.map(n=>n.message))];
-      html+=`<div class="ntf-item${hasUnread?' unread':''}" style="flex-direction:column;align-items:flex-start">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-          <span class="ntf-item-icon">${icon}</span>
-          <span style="font-weight:700;font-size:13px">${label}</span>
-          <span style="font-size:10px;color:var(--text2)">${g.items[0].createdAt||''}</span>
+    deduped.forEach(n=>{
+      const icon=ntfTypeIcon(n.type);
+      html+=`<div class="ntf-item${n.read?'':' unread'}">
+        <div class="ntf-item-icon">${icon}</div>
+        <div class="ntf-item-body">
+          <div class="ntf-item-msg">${escHtml(n.message)}</div>
+          <div class="ntf-item-time">${n.createdAt||''}</div>
         </div>
-        ${msgs.map(m=>`<div style="font-size:12px;color:var(--text);padding:2px 0 2px 28px">${escHtml(m)}</div>`).join('')}
       </div>`;
     });
   }
@@ -1525,8 +1512,11 @@ function inboxAcceptGroup(keys){
     const firstMatch=keys[0].match(/^(.+)_(\d{4}-\d{2}-\d{2})$/);
     if(firstMatch){
       const castName=firstMatch[1];
-      const wkLabels=keys.map(k=>{const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);return m?getWeekLabel(m[1]):'';}).filter(Boolean).join('、');
-      notifyCast(castName,'confirm',`${wkLabels} のシフト提出が受理されました ✅`);
+      // 重複除去した週ラベル
+      const _uniqWks=[...new Set(keys.map(k=>{const m=k.match(/_(\d{4}-\d{2}-\d{2})$/);return m?m[1]:'';}).filter(Boolean))];
+      const wkLabels=_uniqWks.map(wk=>getWeekLabel(wk)).join('、');
+      const _ntfMsg=`${wkLabels} のシフト提出が受理されました ✅`;
+      notifyCast(castName,'confirm',_ntfMsg);
       if(GAS_URL){
         const body=new FormData();
         body.append('action','addNotification');
@@ -1534,7 +1524,7 @@ function inboxAcceptGroup(keys){
         body.append('role','cast');
         body.append('castName',castName);
         body.append('type','confirm');
-        body.append('message',`${wkLabels} のシフト提出が受理されました ✅`);
+        body.append('message',_ntfMsg);
         fetch(GAS_URL,{method:'POST',body}).catch(e=>console.warn(e));
       }
     }
@@ -1558,7 +1548,9 @@ function notifyStaff(type, message){
 
 // キャストへの通知を追加
 function notifyCast(castName, type, message){
-  // ローカルのみ保存（GAS側のconfirmSaveで通知ストアへ保存される）
+  // 同じメッセージが既にある場合は追加しない（重複防止）
+  const _existNtf=getLocalNtf(getCastNtfKey(castName));
+  if(_existNtf.some(n=>n.message===message&&n.type===type)) return;
   addNotification(getCastNtfKey(castName), type, message);
   updateNtfBadge();
 }
@@ -2417,6 +2409,13 @@ function renderCal(){
     if(_isTempUnlockedCal&&(!sh||sh.start==null)){
       inner+=`<div class="cal-shift-tag change-req" style="font-size:10px">🚫 休日<br><span style="font-size:8px;font-weight:700">リクエスト中</span></div>`;
     }
+    // change_requested で休日リクエストの日（shが削除されているためブロック外で処理）
+    if(!_isTempUnlockedCal&&_subTmpCal&&_subTmpCal.status==='change_requested'&&(!sh||sh.start==null)){
+      const _crHol=(_subTmpCal.changeRequests||[]).find(c=>c.ds===ds&&c.type==='holiday');
+      if(_crHol){
+        inner+=`<div class="cal-shift-tag change-req" style="font-size:10px">🚫 休日<br><span style="font-size:8px;font-weight:700">リクエスト中</span></div>`;
+      }
+    }
     if(sh&&sh.start!=null){
       // ステータスに応じてタグの色を変える
       const wkTmp=_wkTmpCal;
@@ -2878,12 +2877,19 @@ function openCrSendConfirm(){
     getWeekDates(wk).forEach(ds=>{
       const cur=S.shifts[name+'_'+ds];
       const bk=_crShiftBackup[name+'_'+ds];
-      // 変更あり（時刻変更 or 新規入力 or 削除）
-      if(JSON.stringify(cur)!==JSON.stringify(bk)){
+      // 変更あり判定（休日変更の正しい検出）
+      // cur: 現在のシフト, bk: バックアップ（解除前）
+      // 両方undefinedは変更なし、片方だけundefinedまたは時刻が違う場合は変更あり
+      const curStart=cur&&cur.start!=null?cur.start:null;
+      const curEnd=cur&&cur.end!=null?cur.end:null;
+      const bkStart=bk&&bk.start!=null?bk.start:null;
+      const bkEnd=bk&&bk.end!=null?bk.end:null;
+      const hasChanged=(curStart!==bkStart)||(curEnd!==bkEnd);
+      if(hasChanged){
         const d=new Date(ds);
-        const isHol=!cur||cur.start==null;
-        const lbl=`${d.getMonth()+1}/${d.getDate()}：${isHol?'🚫 休日変更':fmtR(cur.start,cur.end)+' に変更'}`;
-        changes.push({ds,wk,type:isHol?'holiday':'time',start:cur&&cur.start!=null?cur.start:null,end:cur&&cur.end!=null?cur.end:null,label:lbl});
+        const isHol=curStart==null; // 現在がnull=休日にした
+        const lbl=`${d.getMonth()+1}/${d.getDate()}：${isHol?'🚫 休日変更':fmtR(curStart,curEnd)+' に変更'}`;
+        changes.push({ds,wk,type:isHol?'holiday':'time',start:curStart,end:curEnd,label:lbl});
       }
     });
   });
@@ -6076,7 +6082,12 @@ function resetCastShift(){
     Object.keys(S.submissions).forEach(k=>{if(k.startsWith(name+'_'))delete S.submissions[k];});
     Object.keys(S.checkData).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkData[k];});
     Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
-    _resetCastNames.add(name); // saveState内のGASマージで復活させない
+    _resetCastNames.add(name);
+    // キャスト通知・受理済みもクリア
+    try{localStorage.removeItem(getCastNtfKey(name));}catch(e){}
+    const _ac=getAccepted();
+    Object.keys(_ac).forEach(k=>{if(k.startsWith(name+'_'))delete _ac[k];});
+    setAccepted(_ac);
     saveState(false);openInfoModal(`✅ ${name}のシフトと提出履歴をクリアしました`,renderSettings);
   });
 }
@@ -6088,7 +6099,12 @@ function resetCastSubmission(){
     Object.keys(S.checkNotes).forEach(k=>{if(k.startsWith(name+'_'))delete S.checkNotes[k];});
     if(S.castLocks&&S.castLocks[name]) delete S.castLocks[name];
     clearLock('cast_'+name);
-    _resetCastNames.add(name); // saveState内のGASマージで復活させない
+    _resetCastNames.add(name);
+    // キャスト通知・受理済みもクリア
+    try{localStorage.removeItem(getCastNtfKey(name));}catch(e){}
+    const _ac2=getAccepted();
+    Object.keys(_ac2).forEach(k=>{if(k.startsWith(name+'_'))delete _ac2[k];});
+    setAccepted(_ac2);
     saveState(false);openInfoModal(`✅ ${name}の提出履歴・チェックをクリアしました`,renderSettings);
   });
 }
@@ -6125,6 +6141,13 @@ function _saveToGasDirectly(successMsg){
   showSyncOverlay('クリア中...');
   fetch(GAS_URL,{method:'POST',body})
     .then(r=>r.json())
+    .then(()=>{
+      // GAS側の通知ストアもクリア
+      const ntfBody=new FormData();
+      ntfBody.append('action','clearNotifications');
+      ntfBody.append('token','sakura2025shift');
+      return fetch(GAS_URL,{method:'POST',body:ntfBody});
+    })
     .then(()=>{
       hideSyncOverlay();
       try{localStorage.setItem('shiftSysV8',JSON.stringify(S));}catch(e){}
